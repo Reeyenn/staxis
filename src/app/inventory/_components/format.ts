@@ -26,14 +26,17 @@ export function daysOutLabel(daysLeft: number): string {
   return `out in ${d} day${d === 1 ? '' : 's'}`;
 }
 
-// Stock status from estimated/par ratio — matches inv-page.jsx thresholds.
-export function ratioStatus(estimated: number, par: number): 'good' | 'low' | 'critical' {
-  if (par <= 0) return 'good';
-  const r = estimated / par;
-  if (r < 0.5) return 'critical';
-  if (r < 1.0) return 'low';
-  return 'good';
-}
+// Stock status from the estimated/par ratio.
+//
+// The house 70/30 rule, shared with every other status surface in the app
+// (src/lib/stock-status.ts): good at 70% of par or more, low from 30% up to
+// 70%, critical below that. This used to be a private 0.5/1.0 family, which
+// made the ledger and the Ordering panel — two screens inside the SAME tab —
+// disagree about the same item: 40 of a par-100 item read as a red Critical
+// pill on the ledger while Ordering called it Low, and 80 read as amber
+// "Order soon" on the ledger while Ordering left it off the order list
+// entirely (it builds candidates through stockStatus). One helper, one answer.
+export { stockStatus as ratioStatus } from '@/lib/stock-status';
 
 // Short "May 12" date string.
 export function shortMonthDay(d: Date): string {

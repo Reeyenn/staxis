@@ -2,8 +2,11 @@ import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
-import { resolveEffectiveRole } from '@/lib/company/access';
-import { isCompanyScopeRole } from '@/lib/company/roles';
+import {
+  accountHasCompanyHat,
+  isCompanyHat,
+  resolveEffectiveRole,
+} from '@/lib/company/access';
 import { canViewFinancials } from '@/lib/roles';
 import { normalizeWorkOrderSeverity } from '@/lib/db-mappers';
 import { stockStatus } from '@/lib/stock-status';
@@ -749,8 +752,7 @@ interface ContextFact {
 
 const COMPANY_ROLE_STRENGTH: Record<PortfolioUiCompanyRole, number> = {
   owner: 3,
-  vp: 2,
-  finance: 1,
+  regional_manager: 1,
 };
 
 export interface PortfolioUiAuthoritativeCompany {
@@ -782,7 +784,7 @@ export function authorizedPortfolioUiContexts(
           propertyIds: Set<string>;
         }>();
         for (const hat of account.hats ?? []) {
-          if (hat.scope !== 'company' || !isCompanyScopeRole(hat.role)) continue;
+          if (!isCompanyHat(hat)) continue;
           const role = hat.role as PortfolioUiCompanyRole;
           const current = grouped.get(hat.organizationId);
           if (!current) {
@@ -823,9 +825,13 @@ export function authorizedPortfolioUiContexts(
               portfolioIntelligenceRead: true as const,
             };
           }),
-          presentationCapabilities: group.role === 'finance'
-            ? ['portfolio_intelligence_read' as const]
-            : ['portfolio_intelligence_read' as const, 'manage_people' as const],
+          // Every surviving company hat (owner, regional manager) may manage
+          // people. `finance` was the one that could not, and 0464 retired it.
+          // WHICH hotels is decided by `propertyIds` above, never here.
+          presentationCapabilities: [
+            'portfolio_intelligence_read' as const,
+            'manage_people' as const,
+          ],
         }));
       })();
   return companies
@@ -1695,6 +1701,7 @@ export async function loadPortfolioUiBootstrap(
     data: {
       version: PORTFOLIO_UI_VERSION,
       generatedAt: now.toISOString(),
+      hasCompanyHat: accountHasCompanyHat(options.account.hats),
       contexts,
       entry: {
         mode: selectedCompany ? 'portfolio' : contexts.length > 0 ? 'company_picker' : 'hotel',

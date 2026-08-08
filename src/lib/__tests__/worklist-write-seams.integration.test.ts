@@ -17,6 +17,13 @@
  *    `${day}T00:00:00.000Z` and UTC midnight is the PREVIOUS local day in every
  *    US timezone. The row contradicted itself and nothing failed.
  *
+ * 3. WHERE A DEPARTMENT-ROUTED TO-DO LANDS. Rule 1 was only ever enforced on
+ *    the ASSIGNEE. Routing to the housekeeping DEPARTMENT was refused nowhere,
+ *    and a to-do routed to any other department was dropped from the list of
+ *    the person who asked for it and from every manager's list at the same
+ *    moment. "Fix the ice machine, Maintenance" saved, returned a 201 with an
+ *    id, and appeared on no screen its author could reach.
+ *
  * WHY A REAL DATABASE. The guard has to hold on the row Postgres actually
  * returns, across a foreign-key'd staff table, an is_active flag, and a
  * property boundary. A stub would return whatever the test told it to and the
@@ -43,6 +50,7 @@ import type { PGlite } from '@electric-sql/pglite';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { POST as commsTasksPost } from '@/app/api/comms/tasks/route';
+import { GET as worklistGet } from '@/app/api/worklist/route';
 import { POST as worklistAssignPost } from '@/app/api/worklist/assign/route';
 import { POST as worklistCompletePost } from '@/app/api/worklist/complete/route';
 import {
@@ -56,11 +64,12 @@ import { assignedStateLine, completionNotice, dueLine } from '@/lib/feed/one-lis
 import {
   assigneeBlockedReason,
   assignmentBlockedReason,
+  departmentBlockedReason,
   isAssignable,
 } from '@/lib/worklist/assignable';
 import { createTask } from '@/lib/comms/core';
 import { createTemplate, isTemplateDueOn, spawnDueRecurringTodos } from '@/lib/recurring-tasks/store';
-import { dayOf } from '@/components/concourse/list-calendar';
+import { dayOf, isoDay } from '@/components/concourse/list-calendar';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
@@ -121,6 +130,13 @@ function postReq(url: string, body: Record<string, unknown>): NextRequest {
       'content-type': 'application/json',
     },
     body: JSON.stringify(body),
+  });
+}
+
+function getReq(url: string): NextRequest {
+  return new NextRequest(url, {
+    method: 'GET',
+    headers: { authorization: 'Bearer worklist-write-seam-test-token' },
   });
 }
 
@@ -194,6 +210,25 @@ describe('who may be handed a to-do', () => {
     assert.equal(assigneeBlockedReason({}), null);
   });
 
+  test('the same rule holds for a DEPARTMENT, not just a person', () => {
+    // The other door, and the one that was standing open. Nothing anywhere
+    // asked whether the department a to-do was routed to had anybody who could
+    // see it.
+    const reason = departmentBlockedReason('housekeeping');
+    assert.ok(reason, 'the housekeeping department must be refused');
+    assert.match(reason, /housekeeping board/i);
+    // A refusal must offer the way through. A wall the model cannot turn into
+    // an offer is a dead end for the manager who asked, so the sentence has to
+    // name where the work SHOULD go, not just where it may not.
+    assert.match(reason, /put it on their board/i, 'a refusal must offer the way through');
+    assert.equal(departmentBlockedReason('front_desk'), null);
+    assert.equal(departmentBlockedReason('maintenance'), null);
+    assert.equal(departmentBlockedReason('general'), null);
+    assert.equal(departmentBlockedReason('all_staff'), null);
+    assert.equal(departmentBlockedReason(null), null, 'an unassigned to-do is not a department to-do');
+    assert.equal(departmentBlockedReason(undefined), null);
+  });
+
   test('no refusal text carries an em dash', () => {
     for (const row of [
       { department: 'housekeeping', is_active: true },
@@ -203,6 +238,7 @@ describe('who may be handed a to-do', () => {
       const reason = assigneeBlockedReason(row);
       assert.ok(reason && !reason.includes('—'), `refusal copy must not use an em dash: ${reason}`);
     }
+    assert.ok(!String(departmentBlockedReason('housekeeping')).includes('—'));
   });
 });
 
@@ -339,6 +375,188 @@ describe('the write seams refuse what the dropdown never offered', () => {
   test('an unassigned to-do is still perfectly legal', async () => {
     const { id } = await createTask(PID_A1, { title: 'Somebody please order coffee' });
     assert.ok(id);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3a. The other door: a to-do handed to a DEPARTMENT
+//
+// Everything above guards the ASSIGNEE. Nothing guarded the department, and a
+// department is the other way the composer, the chat door and the recurring
+// engine can address a to-do. Two separate holes came out of that:
+//
+//   housekeeping   accepted everywhere and reaching nobody, because a
+//                  housekeeper has no Staxis page at all (listStandingFor) and
+//                  nothing on their board reads comms_tasks. As a STANDING
+//                  to-do it manufactured one invisible row every day.
+//
+//   anything else  accepted, saved, 201 with an id, and then dropped from the
+//                  list of the person who asked for it: taskVisibleToViewer
+//                  returned on the department match, so the author clause and
+//                  the manager clause underneath it never ran. The drawer does
+//                  not hold it either (keepForAssigner deliberately drops a
+//                  waiting department row), so on a hotel with nobody in that
+//                  department the work reached zero screens.
+//
+// Read through the ROUTE, not through gatherWorklist directly: the viewer this
+// bug turns on is built inside the route from the session, and a test that
+// hand-rolled one could pass while the real screen stayed empty.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a to-do handed to a department', () => {
+  interface ListedRow { sourceId: string; title: string; sourceType: string }
+
+  /** The to-do rows the route actually puts on Maria's screen. */
+  async function listedForMaria(): Promise<ListedRow[]> {
+    const res = await worklistGet(getReq(`https://staxis.test/api/worklist?pid=${PID_A1}`));
+    const body = (await res.json()) as { ok: boolean; error?: string; data?: { items?: ListedRow[] } };
+    assert.equal(res.status, 200, JSON.stringify(body));
+    return (body.data?.items ?? []).filter((i) => i.sourceType === 'task');
+  }
+
+  test('housekeeping is refused, exactly as a housekeeper named by id is', async () => {
+    const res = await commsTasksPost(postReq('https://staxis.test/api/comms/tasks', {
+      pid: PID_A1,
+      title: 'Strip the third floor',
+      assignedDepartment: 'housekeeping',
+    }));
+    const body = (await res.json()) as Envelope;
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.match(String(body.error), /housekeeping board/i);
+    assert.equal(
+      (await pg.query('select id from comms_tasks')).rows.length,
+      0,
+      'a refused route must not leave a to-do nobody can see',
+    );
+  });
+
+  test('housekeeping is refused as a STANDING to-do, which is the daily version of it', async () => {
+    const res = await commsTasksPost(postReq('https://staxis.test/api/comms/tasks', {
+      pid: PID_A1,
+      title: 'Deep clean one floor',
+      assignedDepartment: 'housekeeping',
+      repeat: 'daily',
+    }));
+    const body = (await res.json()) as Envelope;
+    assert.equal(res.status, 400, JSON.stringify(body));
+    assert.match(String(body.error), /housekeeping board/i);
+    assert.equal((await pg.query('select id from recurring_task_templates')).rows.length, 0);
+  });
+
+  test('the insert helper refuses it too, so the chat door cannot walk past the route', async () => {
+    assert.match(
+      await refusalMessage(() => createTask(PID_A1, {
+        title: 'Strip 214', assignedDepartment: 'housekeeping',
+      })),
+      /housekeeping board/i,
+    );
+    assert.equal((await pg.query('select id from comms_tasks')).rows.length, 0);
+  });
+
+  test('maintenance work is on the list of the manager who asked for it', async () => {
+    // The one that silently reached nobody. The composer offers "Maintenance"
+    // at every hotel, whether or not anybody works in that department, and the
+    // chat door files a complaint follow-up there by itself.
+    const res = await commsTasksPost(postReq('https://staxis.test/api/comms/tasks', {
+      pid: PID_A1,
+      title: 'Fix the ice machine',
+      assignedDepartment: 'maintenance',
+    }));
+    const body = (await res.json()) as Envelope;
+    assert.equal(res.status, 201, JSON.stringify(body));
+
+    const stored = await one<{ id: string; assigned_department: string | null }>(
+      'select id, assigned_department from comms_tasks',
+    );
+    assert.equal(stored?.assigned_department, 'maintenance', 'it really was routed to the department');
+
+    const listed = await listedForMaria();
+    assert.ok(
+      listed.some((i) => i.sourceId === stored!.id),
+      'a manager must not be able to write work that lands on no screen they can reach',
+    );
+  });
+
+  test('and the drawer is not where it went instead', async () => {
+    // Proves the row genuinely had nowhere else to be, rather than the list
+    // being one of two places it could have shown up.
+    await commsTasksPost(postReq('https://staxis.test/api/comms/tasks', {
+      pid: PID_A1,
+      title: 'Bleed the third floor radiators',
+      assignedDepartment: 'maintenance',
+    }));
+    const stored = await one<{ id: string; created_by_staff_id: string }>(
+      'select id, created_by_staff_id from comms_tasks',
+    );
+    const drawer = await gatherAssignedByMe(PID_A1, stored!.created_by_staff_id);
+    assert.equal(
+      drawer.some((e) => e.taskId === stored!.id),
+      false,
+      'a waiting department row is deliberately not in the drawer, so the list is its only home',
+    );
+  });
+
+  test('front-desk work still reaches the front desk, and not the whole floor', async () => {
+    // The widening must not have turned into "everybody sees everything".
+    await commsTasksPost(postReq('https://staxis.test/api/comms/tasks', {
+      pid: PID_A1,
+      title: 'Reprint the breakfast signage',
+      assignedDepartment: 'front_desk',
+    }));
+    const stored = await one<{ id: string }>('select id from comms_tasks');
+
+    const forTheDesk = await gatherWorklist(PID_A1, {
+      viewer: { staffId: frontDesk, accountId: 'front-desk-account', role: 'front_desk', dept: 'front_desk' },
+    });
+    assert.ok(forTheDesk.some((i) => i.sourceId === stored!.id), 'the desk still gets the desk’s work');
+
+    const forMaintenance = await gatherWorklist(PID_A1, {
+      viewer: { staffId: 'nobody-in-particular', accountId: 'x', role: 'maintenance', dept: 'maintenance' },
+    });
+    assert.equal(
+      forMaintenance.some((i) => i.sourceId === stored!.id),
+      false,
+      'a maintenance tech has no business holding the front desk’s work',
+    );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3aa. Whose calendar the squares belong to
+//
+// "Due Friday" is stored as the last millisecond of the HOTEL's Friday, and
+// the month grid and the week strip turned that instant back into a day in
+// the READER's browser. 23:59:59.999 in California is 01:59 the next morning
+// in Texas, so every dated row on a west-coast hotel carried its dot one
+// square forward for a VP sitting in Texas, and clicking the day the row
+// actually names showed an empty page. Invisible to a manager sitting inside
+// their own hotel, which is exactly why it survived a phone pass, a redesign
+// and two audits.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a calendar square is the hotel’s day, not the reader’s', () => {
+  test('a to-do due at a west-coast hotel does not slide onto tomorrow', async () => {
+    // The suite's own clock is Chicago; see the TZ pin at the top of the file.
+    await pg.query(`update properties set timezone = 'America/Los_Angeles' where id = $1`, [PID_A1]);
+    try {
+      const res = await commsTasksPost(postReq('https://staxis.test/api/comms/tasks', {
+        pid: PID_A1,
+        title: 'Change the lobby filters',
+        dueDate: '2026-08-07',
+      }));
+      assert.equal(res.status, 201, JSON.stringify(await res.json()));
+
+      const item = (await gatherWorklist(PID_A1)).find((i) => i.sourceType === 'task');
+      assert.ok(item, 'the to-do is on the list');
+      assert.equal(
+        isoDay(new Date(Date.parse(item.dueDate!))),
+        '2026-08-08',
+        'the reader’s own clock really does say the next day, which is the whole trap',
+      );
+      assert.equal(dayOf(item), '2026-08-07', 'and the square has to be the hotel’s Friday');
+    } finally {
+      await pg.query(`update properties set timezone = 'America/Chicago' where id = $1`, [PID_A1]);
+    }
   });
 });
 
@@ -811,6 +1029,92 @@ describe('a completion is recorded on the day the work happened', () => {
     );
     const body = await settle(row!.id, 'cant');
     assert.equal(body.ok, false, 'a reasonless refusal is still refused');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A second screen cannot overwrite an answer that already landed
+//
+// Done is the most-tapped button on this list and it was the only ending that
+// wrote unconditionally. "Can't do this", "Not needed" and "Did it yesterday"
+// all scope their update to a still-open row, with the note that a stale screen
+// must not be able to rewrite a completion. Done did not, and the traffic runs
+// the wrong way through the gap: a refusal is worth more than a completion,
+// because it carries the sentence the assigner would otherwise have to go and
+// ask for, and the drawer derives its state from `status` alone.
+//
+// No deliberate two-tab setup is needed. The list polls once a minute, and a
+// hotel runs a terminal at the desk and a phone in somebody's pocket.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('a second screen cannot overwrite an answer that already landed', () => {
+  async function settledRow(id: string) {
+    return one<{ status: string; blocked_reason: string | null; completed_at: string | null; skipped_at: string | null }>(
+      'select status, blocked_reason, completed_at, skipped_at from comms_tasks where id = $1',
+      [id],
+    );
+  }
+
+  async function openTask(title: string): Promise<string> {
+    const me = await callerStaffId();
+    const row = await one<{ id: string }>(
+      `insert into comms_tasks (property_id, title, assigned_staff_id, created_by_staff_id, status)
+       values ($1, $2, $3, $3, 'open') returning id`,
+      [PID_A1, title, me],
+    );
+    return row!.id;
+  }
+
+  test('a late Done does not erase a refusal, or the reason with it', async () => {
+    const id = await openTask('Replace the lobby ice machine filter');
+
+    // On his phone: he cannot do it, and he says why.
+    assert.equal((await settle(id, 'cant', 'the part is on back order')).ok, true);
+
+    // On the front-desk terminal, still showing the list it read a minute ago.
+    const late = await settle(id, 'done');
+    assert.equal(late.ok, false, 'a Done that changed nothing must not be reported as recorded');
+
+    const after = await settledRow(id);
+    assert.equal(after!.status, 'blocked', 'the refusal is what actually happened');
+    assert.equal(
+      after!.blocked_reason,
+      'the part is on back order',
+      'and the one sentence the assigner needs is still on the row',
+    );
+    assert.equal(after!.completed_at, null, 'nothing was recorded as finished');
+  });
+
+  test('a late Done does not turn "Not needed" into work that happened', async () => {
+    const id = await openTask('Order the spare filters');
+    assert.equal((await settle(id, 'skip')).ok, true);
+    assert.equal((await settle(id, 'done')).ok, false);
+
+    const after = await settledRow(id);
+    assert.equal(after!.status, 'skipped');
+    assert.ok(after!.skipped_at, 'the decision that was actually made is intact');
+    assert.equal(after!.completed_at, null);
+  });
+
+  test('but two people both tapping Done is not an error for the second one', async () => {
+    // The work IS done. Reporting a failure here would send somebody looking
+    // for a row that is correctly gone, and re-stamping it would move the
+    // receipt onto whoever tapped last.
+    const id = await openTask('Walk the pool deck');
+    assert.equal((await settle(id, 'done')).ok, true);
+    const first = await settledRow(id);
+
+    assert.equal((await settle(id, 'done')).ok, true, 'the second tap is not a failure');
+    const second = await settledRow(id);
+    assert.equal(second!.status, 'done');
+    // Through the driver these come back as Date instances, so compare the
+    // instant rather than the object: two Dates holding the same millisecond
+    // are not the same reference and strictEqual would fail on a passing case.
+    assert.equal(
+      new Date(second!.completed_at!).getTime(),
+      new Date(first!.completed_at!).getTime(),
+      'the first answer is the true one',
+    );
   });
 });
 

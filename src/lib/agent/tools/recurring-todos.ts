@@ -30,7 +30,7 @@ import {
   type RecurringPriority,
 } from '@/lib/recurring-tasks/store';
 import { resolveStaffByName } from './_helpers';
-import { assigneeBlockedReason } from '@/lib/worklist/assignable';
+import { assigneeBlockedReason, departmentBlockedReason } from '@/lib/worklist/assignable';
 
 const PRIORITIES = ['normal', 'high', 'urgent'] as const;
 /** Exported because list_scheduled_items (tools/reminders.ts) renders recurring
@@ -69,7 +69,7 @@ registerTool<CreateRecurringTodoArgs>({
     'Use when: the user describes a routine, not a one-off — "every morning check the pool chemicals", "every Monday deep-clean the lobby", "cada día revisar el desayuno". A single task is create_todo; a message at one future time is create_reminder. ' +
     'Args: title — what the task says, capped at 200 characters. cadence — "daily", "weekdays" (Mon–Fri), "weekly", "biweekly" (every other week), "monthly", or "every_n_days" for a gap of so many days. weekday — required for weekly and biweekly; a day name like "Monday" or 0–6 with 0 = Sunday. dayOfMonth — required for monthly; 1 to 28. intervalDays — required for every_n_days; 2 to 365. assignee — optional person by name. department — optional. priority — normal (default), high or urgent. ' +
     'Returns: the template id, its title, cadence and target. A proposal until the manager approves the card. ' +
-    'Refuses: an empty title, a cadence it does not recognise, a weekly item with no weekday, and an assignee matching several people. Two things to be straight about: this creates the RULE, not today\'s task — nothing appears until the next time it is due — and it notifies nobody when it spawns. Stopping it later needs stop_recurring_todo; to-dos already spawned stay on the list.',
+    'Refuses: an empty title, a cadence it does not recognise, a weekly item with no weekday, and an assignee matching several people. It also refuses housekeeping, as a person or as a department: housekeepers work from the housekeeping board and never open the to-do list, so a standing rule aimed there would spawn a task nobody can see every time it came due. Offer a named person or an unassigned item instead. Two things to be straight about: this creates the RULE, not today\'s task — nothing appears until the next time it is due — and it notifies nobody when it spawns. Stopping it later needs stop_recurring_todo; to-dos already spawned stay on the list.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -117,6 +117,11 @@ registerTool<CreateRecurringTodoArgs>({
       }
     }
 
+    // Checked against what was ASKED FOR, before the coercion below drops it —
+    // a standing rule quietly downgraded to "unassigned" would still be
+    // reported back to the manager as housekeeping's job.
+    const deptBlocked = departmentBlockedReason(department);
+    if (deptBlocked) return { ok: false, error: deptBlocked };
     const dept = department && (RECURRING_DEPARTMENTS as readonly string[]).includes(department) ? department : null;
     const prio: RecurringPriority = (PRIORITIES as readonly string[]).includes(priority ?? '')
       ? (priority as RecurringPriority) : 'normal';

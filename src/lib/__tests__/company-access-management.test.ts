@@ -119,9 +119,16 @@ describe('company access editor request contracts', () => {
     }>).sourceKind;
     assert.equal(parseCompanyAccessEditorProjection(missingProvenance), null);
 
+    // A company word on a property-scope hat. `scopeAllowsRole` is what refuses
+    // it. (This used to send `finance`, which 0464 retired; the retired-word
+    // case is covered right below so both refusals stay pinned.)
     const mismatchedHat = structuredClone(validProjection);
-    mismatchedHat.organizations[0].memberships[0].sourceRole = 'finance';
+    mismatchedHat.organizations[0].memberships[0].sourceRole = 'regional_manager';
     assert.equal(parseCompanyAccessEditorProjection(mismatchedHat), null);
+
+    const retiredRoleWord = structuredClone(validProjection);
+    retiredRoleWord.organizations[0].memberships[0].sourceRole = 'finance';
+    assert.equal(parseCompanyAccessEditorProjection(retiredRoleWord), null);
 
     const additiveHat = structuredClone(validProjection);
     additiveHat.organizations[0].memberships[0].canAdd = true;

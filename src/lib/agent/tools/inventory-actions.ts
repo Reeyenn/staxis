@@ -16,9 +16,17 @@
 //   inventory_orders is the received-delivery ledger. `markOrdered` must never
 //   write there: purchase cost belongs only to a delivery actually received.
 //
-// Status classification mirrors src/app/inventory/_components/format.ts
-// `ratioStatus`: ratio = current/par; <0.5 critical, <1.0 low, else good.
-// (Re-implemented inline so a server tool doesn't import an app-route module.)
+// Status classification uses the ONE house rule, src/lib/stock-status.ts:
+// ratio = current/par; >= 0.7 good, >= 0.3 low, else critical.
+//
+// It used to be a private inline copy of the retired 0.5/1.0 family, carrying a
+// comment claiming it matched the Inventory tab. It did not: the tab moved to
+// the 70/30 rule when format.ts started re-exporting stockStatus, and the copy
+// here stayed behind. The assistant therefore answered "what's running low"
+// with a different list and different colors than the screen the manager was
+// looking at (80 of a par-100 item: board Good, assistant "low"; 40 of the
+// same: board Low, assistant "critical"). stock-status.ts is a plain lib
+// module, so importing it from a server tool is fine.
 //
 // Roles: reads + writes are allowed for managers AND front_desk (the inventory
 // UI's default audience). The MUTATION additionally carries
@@ -29,22 +37,11 @@
 // ADDITIVE + self-registering — add `import './inventory-actions';` to index.ts.
 
 import { ASSISTANT_COUNT_NOTE } from '@/lib/inventory-note-tags';
+import { stockStatus, type StockStatus } from '@/lib/stock-status';
 import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import type { ScopedDb } from '../scoped-db';
 
 const INVENTORY_CATEGORIES = ['housekeeping', 'maintenance', 'breakfast'] as const;
-type StockStatus = 'good' | 'low' | 'critical';
-
-/** 70/30-style Good/Low/Critical from the current/par ratio. Matches the
- *  Inventory tab (format.ts ratioStatus): <0.5 critical, <1.0 low, else good.
- *  A zero/absent par can't be classified — treat as 'good' (no target set). */
-function stockStatus(current: number, par: number): StockStatus {
-  if (!(par > 0)) return 'good';
-  const r = current / par;
-  if (r < 0.5) return 'critical';
-  if (r < 1.0) return 'low';
-  return 'good';
-}
 
 interface InvItemRow {
   id: string;
@@ -98,7 +95,7 @@ registerTool<GetLowStockArgs>({
     'What is on the shelves right now, and what is running out. The one inventory-level read. ' +
     'Use when: the user asks "what\'s running low", "what do we need to order", "are we low on towels", "how many pillowcases do we have", "qué se está acabando". For what inventory COST over a month use get_inventory_monthly_accounting; to change a count use adjust_stock. ' +
     'Args: category — narrow to housekeeping, maintenance or breakfast; omit for all three. includeAll — set true to list every item with its status, not just the ones below par (use it when the user asks how much of something there is, not what is short). ' +
-    'Returns: { totalItems, criticalCount, lowCount, items[] } with each item\'s name, category, current stock, par level, unit and status, critical first. Status is computed here against par — Critical below half of par, Low below par, Good at or above — so quote it rather than judging from the two numbers. ' +
+    'Returns: { totalItems, criticalCount, lowCount, items[] } with each item\'s name, category, current stock, par level, unit and status, critical first. Status is computed here against par with the same rule the Inventory screen paints: Critical below 30% of par, Low from 30% up to 70%, Good at 70% of par or more. Quote it rather than judging from the two numbers, and it will always agree with the color the manager is looking at. ' +
     'Refuses: nothing, but an item with no par level set cannot be classified and comes back "good" by default, which is not a claim that it is well stocked. These are the counts as last entered by staff, not a live measurement — if the user is deciding on an order, say when the item was last counted rather than implying the number is current.',
   inputSchema: {
     type: 'object',

@@ -23,6 +23,7 @@ import {
   shortDateFromDate,
   fmtWhenAgo,
   fmtWhenDateTime,
+  fmtWhenDateTimeInZone,
   fmtDurationMins,
   fmtTimeOrDate,
   fmtTimeInZone,
@@ -265,5 +266,56 @@ describe('shortMonthFromYmd', () => {
     assert.equal(shortMonthFromYmd('2026-00-01', 'en'), '—');
     assert.equal(shortMonthFromYmd('2026-13-01', 'en'), '—');
     assert.equal(shortMonthFromYmd('', 'en'), '—');
+  });
+});
+
+// ─── fmtWhenDateTimeInZone (dashboard Log book card) ────────────────────────
+//
+// A shift recap is stamped AT THE HOTEL. Rendering it on the reader's clock put
+// a Texas hotel's 12:30 AM entry on the previous calendar day for an owner in
+// California, so the owner and the night auditor who wrote it disagreed about
+// which shift it belonged to. Every expectation below is hardcoded because the
+// whole point is that the answer does not depend on the machine running it.
+
+describe('fmtWhenDateTimeInZone', () => {
+  // 2026-03-05T06:30:00Z = 12:30 AM Mar 5 in Chicago, 10:30 PM Mar 4 in LA.
+  const AFTER_MIDNIGHT = '2026-03-05T06:30:00.000Z';
+
+  test('a hotel-midnight entry keeps the hotel\'s calendar day, whoever reads it', () => {
+    assert.equal(fmtWhenDateTimeInZone(AFTER_MIDNIGHT, 'America/Chicago'), 'Mar 5, 12:30 AM');
+    // The same instant on the reader's clock in California — the day the card
+    // used to print. Stated here so the difference is the test, not a comment.
+    assert.equal(fmtWhenDateTimeInZone(AFTER_MIDNIGHT, 'America/Los_Angeles'), 'Mar 4, 10:30 PM');
+  });
+
+  test('an evening entry keeps the hotel\'s clock time', () => {
+    // 2026-07-16T04:30:00Z = 11:30 PM Jul 15 in Chicago.
+    assert.equal(fmtWhenDateTimeInZone('2026-07-16T04:30:00.000Z', 'America/Chicago'), 'Jul 15, 11:30 PM');
+    assert.equal(fmtWhenDateTimeInZone('2026-07-16T04:30:00.000Z', 'Pacific/Honolulu'), 'Jul 15, 6:30 PM');
+  });
+
+  test('honours a hotel east of the reader too', () => {
+    assert.equal(fmtWhenDateTimeInZone(AFTER_MIDNIGHT, 'America/New_York'), 'Mar 5, 1:30 AM');
+  });
+
+  test('a hotel with no timezone falls back to the reader rather than losing the stamp', () => {
+    const d = new Date(2026, 2, 5, 14, 5);
+    const expected = d.toLocaleString('en', {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+    assert.equal(fmtWhenDateTimeInZone(d.toISOString(), null), expected);
+    assert.equal(fmtWhenDateTimeInZone(d.toISOString(), '  '), expected);
+  });
+
+  test('an unknown IANA zone degrades to the reader instead of throwing', () => {
+    const d = new Date(2026, 2, 5, 14, 5);
+    const expected = d.toLocaleString('en', {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    });
+    assert.equal(fmtWhenDateTimeInZone(d.toISOString(), 'Mars/Olympus_Mons'), expected);
+  });
+
+  test('an unusable timestamp renders nothing at all', () => {
+    assert.equal(fmtWhenDateTimeInZone('not a date', 'America/Chicago'), '');
   });
 });

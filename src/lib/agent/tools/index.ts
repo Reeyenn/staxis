@@ -15,12 +15,20 @@ import './management';
 // returned fixed "not integrated" notes, get_inventory duplicated get_low_stock
 // against the wrong threshold column, and get_occupancy read the same counts RPC
 // as get_today_summary. Surviving retired wire-names live on in TOOL_ALIASES.
-import './walkthrough';
+// './walkthrough' is GONE (2026-08-07, the companion tour). `walk_user_through`
+// started a cursor demo whose every step was chosen by a model from a list of
+// everything clickable on the screen, matched by accessible name. The tour that
+// replaces it is authored content over the anchor registry, so the thing a
+// person asks for is now `staxis_show_around` next door and it points at
+// controls by key rather than by guess.
 import './staxis-show-pattern';
 // The chat half of the discovery pointer: an arrow at a real control on the
 // screen the person is standing on. See staxis-point-at.ts for the three walls
 // that make pointing at nothing impossible.
 import './staxis-point-at';
+// "Show me around." The tour, reachable forever by asking, for the person who
+// said no to it on their first morning.
+import './staxis-show-around';
 import './complaints';
 import './lost-found';
 import './financials';

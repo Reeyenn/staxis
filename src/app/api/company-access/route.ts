@@ -46,7 +46,6 @@ import {
   type CompanyAccessPermissions,
   type CompanyActivityEvent,
   type CompanyDelegationPolicy,
-  type CompanyInvitation,
   type CompanyManagedGrant,
   type CompanyMembership,
   type CompanyOrganization,
@@ -57,7 +56,9 @@ import {
   type EffectiveAccessReceipt,
 } from '@/lib/company-access/dto';
 import type { AppRole } from '@/lib/roles';
-import { resolveHatCoverage } from '@/lib/company/access';
+import {
+  hatCoverageFromColumn,
+  resolveHatCoverage } from '@/lib/company/access';
 import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 import {
   accessProfileForHat,
@@ -182,7 +183,7 @@ function hatFactsFor(
       jobTitle: row.job_title ?? null,
       propertyIds: resolveHatCoverage(
         scope,
-        Array.isArray(row.covered_property_ids) ? row.covered_property_ids : [],
+        hatCoverageFromColumn(row.covered_property_ids),
         operatedPropertyIds,
       ),
       accessProfile: accessProfileForHat(scope, role),
@@ -448,9 +449,6 @@ function eventSummary(eventType: string): string {
     'organization_membership.removed': 'A company member was removed',
     'organization_access_grants.insert': 'Access was granted',
     'organization_access_grants.update': 'An access grant was updated',
-    'organization_invitations.insert': 'An invitation was created',
-    'organization_invitations.update': 'An invitation was updated',
-    'organization_invitation.cancelled': 'An invitation was cancelled',
     'organization_access_requests.insert': 'Access was requested',
     'organization_access_requests.update': 'An access request was reviewed',
     'organization_property_relationships.insert': 'A hotel was connected to the organization',
@@ -702,7 +700,6 @@ async function bridgeOnlyProjection(
       reason: 'Canonical property authorization bridge',
       status: 'active',
     })),
-    invitations: [],
     requests: [],
     activity: [],
     permissions: canonicalBridgePermissions(account.role, propertyIds),
@@ -1106,7 +1103,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         ...(isMembershipScope(membership.membership_scope) && isHatRole(membership.staxis_role)
           ? resolveHatCoverage(
               membership.membership_scope,
-              Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+              hatCoverageFromColumn(membership.covered_property_ids),
               new Set(item.relationships
                 .filter((relationship) => (
                   relationship.is_primary_grouping === true
@@ -1347,7 +1344,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         .map((relationship) => relationship.property_id));
       const propertyIds = resolveHatCoverage(
         membership.membership_scope,
-        Array.isArray(membership.covered_property_ids) ? membership.covered_property_ids : [],
+        hatCoverageFromColumn(membership.covered_property_ids),
         operatedPropertyIds,
       ).filter((propertyId) => allowedPropertyIds.has(propertyId));
       const currentlyEffective = membership.status === 'active'
@@ -1524,38 +1521,6 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
   );
   if (feedError) throw feedError;
   const feed = parseCompanyAccessFeed(feedData);
-  const visibleInvitations = feed.invitations.filter((invitation) => {
-    const item = organizationsData.find((candidate) => candidate.organization.id === invitation.organization_id);
-    return !!item && canDelegateAccess({
-      actorAccountId,
-      organizationId: invitation.organization_id,
-      requestedProfile: invitation.access_profile,
-      requestedScopeType: invitation.scope_type,
-      requestedPortfolioId: invitation.portfolio_id,
-      requestedPropertyId: invitation.property_id,
-    }, item.facts).allowed;
-  }).slice(0, COMPANY_PROJECTION_PAGE_SIZE);
-  const invitations: CompanyInvitation[] = visibleInvitations.map((invitation) => ({
-    id: invitation.id,
-    organizationId: invitation.organization_id,
-    email: invitation.email,
-    accessProfile: invitation.access_profile,
-    scopeLabel: scopeLabel(invitation, organizationNames, portfolioNames, propertyNames),
-    propertyIds: invitation.scope_type === 'organization'
-      ? organizationsData.find((item) => item.organization.id === invitation.organization_id)?.actorPropertyIds.size
-        ? [...organizationsData.find((item) => item.organization.id === invitation.organization_id)!.actorPropertyIds]
-        : []
-      : invitation.scope_type === 'portfolio'
-        ? companyPortfolios.find((portfolio) => portfolio.id === invitation.portfolio_id)?.propertyIds ?? []
-        : invitation.property_id ? [invitation.property_id] : [],
-    status: new Date(invitation.expires_at).getTime() <= nowMs ? 'expired' : 'pending',
-    expiresAt: invitation.expires_at,
-    invitedBy: invitation.invited_by_account_id
-      ? accountNames.get(invitation.invited_by_account_id) ?? null
-      : null,
-    canCancel: true,
-  }));
-
   const membershipById = new Map(membershipOrganizationsData.flatMap((item) => item.memberships)
     .map((membership) => [membership.id, membership]));
   const requestCanBeManaged = (request: RequestRow): boolean => {
@@ -1651,10 +1616,6 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         && activeWindow(String(grant.startsAt), grant.expiresAt ? String(grant.expiresAt) : null, nowMs)
         && grantPropertyIds(grant, item.facts, nowMs).some((propertyId) => activityPropertyIds.has(propertyId))
       ))).forEach((membership) => ids.add(membership.id));
-      invitations.filter((invitation) => (
-        invitation.organizationId === item.organization.id
-        && invitation.propertyIds.some((propertyId) => activityPropertyIds.has(propertyId))
-      )).forEach((invitation) => ids.add(invitation.id));
       requests.filter((request) => (
         request.organizationId === item.organization.id
         && request.propertyIds.some((propertyId) => activityPropertyIds.has(propertyId))
@@ -1696,7 +1657,6 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     memberships: companyMemberships,
     effectiveAccess: receipts,
     accessHistory,
-    invitations,
     requests,
     activity,
     permissions,

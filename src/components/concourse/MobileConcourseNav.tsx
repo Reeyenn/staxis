@@ -2,15 +2,17 @@
 
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronRight, Download, LogOut, Menu, X } from 'lucide-react';
+import { ArrowLeft, ChevronRight, Download, LogOut, Menu, X } from 'lucide-react';
 import type { AdminDestinationAction, BarItem } from './ConcourseBarView';
 import { CxIcon, CxLogo, CX_ICON_PATHS } from './icons';
 import styles from './MobileConcourseNav.module.css';
 
 interface MobileConcourseNavProps {
   items: BarItem[];
-  propertyOptions: ReadonlyArray<{ value: string; label: string }>;
-  activePropertyId: string | null;
+  /** Where the person can work: company rows and hotel rows in one list. The
+   *  value is the row's opaque key, resolved back through the same list. */
+  scopeOptions: ReadonlyArray<{ value: string; label: string }>;
+  activeScopeValue: string | null;
   userName: string;
   userMeta: string;
   userInitial: string;
@@ -22,7 +24,7 @@ interface MobileConcourseNavProps {
   navigationLabel: string;
   sectionsLabel: string;
   accountLabel: string;
-  propertyLabel: string;
+  scopeLabel: string;
   accountMenuLabel: string;
   companyLabel: string;
   adminDestination?: AdminDestinationAction;
@@ -40,7 +42,10 @@ interface MobileConcourseNavProps {
   onCompanyIntent?: () => void;
   onSettingsIntent?: () => void;
   onSignOut: () => void;
-  onPropertyChange: (propertyId: string) => void;
+  /** Present only when this session was switched into by a platform admin. */
+  returnToAdminLabel?: string;
+  onReturnToAdmin?: () => void;
+  onScopeChange: (scopeValue: string) => void;
   onInstall: (returnFocusElement: HTMLButtonElement | null) => void;
 }
 
@@ -56,8 +61,8 @@ const FOCUSABLE_SELECTOR = [
 /** Phone-only Concourse chrome. It intentionally owns its dialog state. */
 export function MobileConcourseNav({
   items,
-  propertyOptions,
-  activePropertyId,
+  scopeOptions,
+  activeScopeValue,
   userName,
   userMeta,
   userInitial,
@@ -68,7 +73,7 @@ export function MobileConcourseNav({
   navigationLabel,
   sectionsLabel,
   accountLabel,
-  propertyLabel,
+  scopeLabel,
   accountMenuLabel,
   companyLabel,
   adminDestination,
@@ -86,7 +91,9 @@ export function MobileConcourseNav({
   onCompanyIntent,
   onSettingsIntent,
   onSignOut,
-  onPropertyChange,
+  returnToAdminLabel,
+  onReturnToAdmin,
+  onScopeChange,
   onInstall,
 }: MobileConcourseNavProps) {
   const [open, setOpen] = React.useState(false);
@@ -202,10 +209,10 @@ export function MobileConcourseNav({
     onSignOut();
   };
 
-  const changeProperty = (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const propertyId = event.target.value;
+  const changeScope = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const scopeValue = event.target.value;
     closeDrawer();
-    onPropertyChange(propertyId);
+    onScopeChange(scopeValue);
   };
 
   const install = () => {
@@ -256,6 +263,22 @@ export function MobileConcourseNav({
         </div>
 
         <div className={styles.drawerScroll}>
+          {/* A switched session must be able to get back from any device, so
+              this sits above everything else in the drawer rather than down
+              with the account controls. The full roster stays desktop-only. */}
+          {returnToAdminLabel ? (
+            <button
+              type="button"
+              className={`${styles.navRow} ${styles.returnToAdminRow}`}
+              onClick={() => { closeDrawer(); onReturnToAdmin?.(); }}
+            >
+              <span className={styles.iconChip} aria-hidden="true">
+                <ArrowLeft size={17} strokeWidth={1.8} />
+              </span>
+              <span className={styles.rowLabel}>{returnToAdminLabel}</span>
+            </button>
+          ) : null}
+
           <div className={styles.eyebrow}>{sectionsLabel}</div>
           <nav className={styles.sectionList} aria-label={sectionsLabel}>
             {items.map((item) => (
@@ -289,17 +312,17 @@ export function MobileConcourseNav({
 
           <div className={styles.eyebrow}>{accountLabel}</div>
           <div className={styles.accountControls}>
-            {propertyOptions.length > 1 ? (
+            {scopeOptions.length > 1 ? (
               <label className={styles.accountControl}>
-                <span>{propertyLabel}</span>
+                <span>{scopeLabel}</span>
                 <select
-                  value={activePropertyId ?? ''}
-                  onChange={changeProperty}
-                  aria-label={propertyLabel}
+                  value={activeScopeValue ?? ''}
+                  onChange={changeScope}
+                  aria-label={scopeLabel}
                 >
-                  {!activePropertyId ? <option value="" disabled>{propertyLabel}</option> : null}
-                  {propertyOptions.map((property) => (
-                    <option key={property.value} value={property.value}>{property.label}</option>
+                  {!activeScopeValue ? <option value="" disabled>{scopeLabel}</option> : null}
+                  {scopeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
               </label>
@@ -409,6 +432,11 @@ export function MobileConcourseNav({
             <span>Staxis</span>
           </button>
         )}
+
+        {/* The live Ask control is portaled here by AskStaxisBar. Keeping the
+            slot in the phone header means it travels with the shell instead
+            of floating over whichever page content is currently scrolled. */}
+        <div className={styles.askSlot} data-staxis-mobile-ask-slot />
 
         <button
           type="button"

@@ -8,13 +8,18 @@
 // Plus full history, Undo, a "Finish week" sign-off, and pending time-off
 // approvals behind the strip label. Everything persists immediately — what
 // you place IS the schedule staff see in My Shifts (no separate publish).
+//
+// Open shifts (slots with nobody on them, either posted here or reopened when
+// a profile was archived) are shown, edited, and retracted on the Day view.
+// They are coverage the hotel does not have yet, so they are drawn dashed and
+// never counted in the "N on" figure.
 
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import type { StaffMember } from '@/types';
+import type { StaffDepartment, StaffMember } from '@/types';
 import {
   addDaysYmd, sundayOf, dayInfo, buildWeeks, deptDefaultTimes,
   weekMinutesByStaff, fmtHours, fmtMinRange, weeklyCapMinutes,
@@ -105,6 +110,7 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
   const [pickerOpen, setPickerOpen] = useState(false);
   const [torHistoryOpen, setTorHistoryOpen] = useState(false);
   const [editorStaffId, setEditorStaffId] = useState<string | null>(null);
+  const [openEditorId, setOpenEditorId] = useState<string | null>(null);
   const [weekAnim, setWeekAnim] = useState(0);
 
   // ── toast ──────────────────────────────────────────────────────────────
@@ -128,6 +134,7 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
   const expandedWeek: WeekInfo = weekByStart.get(expandedWeekStart) ?? weeks[0];
 
   const dayShifts = data.getDay(selDate);
+  const dayOpenShifts = data.getOpenDay(selDate);
 
   // Active staff + name lookup shared with children.
   const activeStaff = useMemo(() => staff.filter(s => s.isActive !== false), [staff]);
@@ -265,6 +272,51 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
     data.setDayLocal(selDate, list => list.filter(x => x.staffId !== editorShift.staffId));
     reportSave(data.commitDay(selDate));
     setEditorStaffId(null);
+  };
+
+  // ── open shifts (unfilled slots) ───────────────────────────────────────
+  // Deliberately outside the undo stack: undo replays whole days through the
+  // assigned-shift fill path, which does not touch open rows at all. Retract
+  // is one explicit click on one row instead.
+  const openEditorShift = openEditorId
+    ? dayOpenShifts.find(o => o.id === openEditorId) ?? null
+    : null;
+
+  const onCreateOpenShift = async (input: {
+    department: StaffDepartment; startMin: number; endMin: number; note: string | null;
+  }) => {
+    await data.saveOpenShift({
+      department: input.department,
+      shiftDate: selDate,
+      startMin: input.startMin,
+      endMin: input.endMin,
+      note: input.note,
+    });
+    setPickerOpen(false);
+    flash('Open shift posted. Anyone in that department can pick it up.');
+  };
+
+  const onOpenEditorSave = (patch: { startMin: number; endMin: number; note: string | null }) => {
+    if (!openEditorShift) return;
+    const target = openEditorShift;
+    setOpenEditorId(null);
+    data.saveOpenShift({
+      id: target.id,
+      department: target.dept,
+      shiftDate: target.date,
+      startMin: patch.startMin,
+      endMin: patch.endMin,
+      note: patch.note,
+    }).catch(e => flash(e instanceof Error ? e.message : 'Could not save the open shift'));
+  };
+
+  const onOpenEditorRetract = () => {
+    if (!openEditorShift) return;
+    const target = openEditorShift;
+    setOpenEditorId(null);
+    data.removeOpenShift(target.id)
+      .then(() => flash('Open shift retracted'))
+      .catch(e => flash(e instanceof Error ? e.message : 'Could not retract the open shift'));
   };
 
   // ── undo ───────────────────────────────────────────────────────────────
@@ -555,7 +607,7 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginBottom: 18, gap: 16, minHeight: 44, flexWrap: 'wrap',
       }}>
-        <h1 style={{
+        <h1 className="staff-schedule-title" style={{
           fontFamily: fonts.sans, fontSize: 26, margin: 0, letterSpacing: '-0.02em',
           lineHeight: 1.1, fontWeight: 600, whiteSpace: 'nowrap', color: T.ink,
         }}>
@@ -616,7 +668,12 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
             border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3,
           }}>
             {([['day', 'Day'], ['week', 'Week']] as const).map(([k, lab]) => (
-              <button key={k} onClick={() => switchView(k)} style={{
+              <button
+                key={k}
+                className="staff-schedule-view-toggle"
+                onClick={() => switchView(k)}
+                aria-pressed={view === k}
+                style={{
                 border: 'none', borderRadius: 999, padding: '6px 12px', cursor: 'pointer',
                 fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
                 background: view === k ? T.ink : 'transparent',
@@ -655,6 +712,20 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
                       </span>
                     );
                   })}
+                  {dayOpenShifts.length > 0 && (
+                    <span
+                      title={'Slots nobody has picked up yet. They are not coverage.'}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0,
+                        border: `1px dashed ${T.caramelDeep}`, borderRadius: 999, padding: '2px 9px',
+                        color: T.caramelDeep,
+                      }}
+                    >
+                      <span style={{ fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                        {dayOpenShifts.length} {'open'}
+                      </span>
+                    </span>
+                  )}
                 </div>
               </div>
               <Btn variant="ghost" size="sm" onClick={() => setPickerOpen(true)} style={{ flexShrink: 0 }}>
@@ -663,6 +734,7 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
             </div>
             <DayBoard
               shifts={dayShifts}
+              openShifts={dayOpenShifts}
               presets={data.presets}
               isToday={day.today}
               timezone={timezone}
@@ -676,7 +748,14 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
               onRemove={onRemoveShift}
               onTapShift={(id) => {
                 const sh = dayShifts.find(s => s.id === id);
-                if (sh && !archivedIds.has(sh.staffId)) setEditorStaffId(sh.staffId);
+                if (sh && !archivedIds.has(sh.staffId)) {
+                  setOpenEditorId(null);
+                  setEditorStaffId(sh.staffId);
+                }
+              }}
+              onTapOpenShift={(id) => {
+                setEditorStaffId(null);
+                setOpenEditorId(id);
               }}
             />
           </Card>
@@ -728,6 +807,7 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
             lang={lang}
             animNonce={weekAnim}
             reducedMotion={reducedMotion}
+            openCountByDate={data.openCountByDate}
             onPickDay={(date) => {
               setSelDate(date);
               setExpandedWeekStart(sundayOf(date));
@@ -792,6 +872,7 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
           weekMinutes={dayWeekMinutes}
           approvedTorByStaff={approvedTorByStaff}
           onPick={onPickStaff}
+          onCreateOpen={onCreateOpenShift}
           onOpenPeople={onOpenPeople
             ? () => { setPickerOpen(false); onOpenPeople(); }
             : undefined}
@@ -816,6 +897,26 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
           onSave={onEditorSave}
           onRemove={onEditorRemove}
           onClose={() => setEditorStaffId(null)}
+        />
+      )}
+      {openEditorShift && (
+        <ShiftEditorModal
+          // staffId is empty on purpose: this slot belongs to nobody yet.
+          shift={{
+            id: openEditorShift.id,
+            staffId: '',
+            dept: openEditorShift.dept,
+            startMin: openEditorShift.startMin,
+            endMin: openEditorShift.endMin,
+            note: openEditorShift.note,
+          }}
+          staffName={'Open shift'}
+          dayLabel={dayPhrase(day)}
+          lang={lang}
+          variant="open"
+          onSave={onOpenEditorSave}
+          onRemove={onOpenEditorRetract}
+          onClose={() => setOpenEditorId(null)}
         />
       )}
     </div>

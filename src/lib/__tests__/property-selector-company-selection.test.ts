@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 import {
   authorizedCompanySelection,
   companyBootstrapPath,
+  shouldAutoEnterSingleHotel,
 } from '@/app/property-selector/company-selection';
 import { propertySelectorRateLimitKey } from '@/lib/company/property-selector-rate-limit';
 
@@ -33,6 +34,27 @@ describe('property selector company boundary', () => {
       companyBootstrapPath('company/a?b'),
       '/api/property-selector/bootstrap?organizationId=company%2Fa%3Fb',
     );
+  });
+
+  test('an exact company hat never skips the selector for its one covered hotel', () => {
+    assert.equal(shouldAutoEnterSingleHotel({
+      exactCompanyHat: true,
+      hotelCount: 1,
+      hasSelectedCompany: false,
+      requiresCompanySelection: false,
+    }), false);
+    assert.equal(shouldAutoEnterSingleHotel({
+      exactCompanyHat: false,
+      hotelCount: 1,
+      hasSelectedCompany: false,
+      requiresCompanySelection: false,
+    }), true);
+    assert.equal(shouldAutoEnterSingleHotel({
+      exactCompanyHat: false,
+      hotelCount: 2,
+      hasSelectedCompany: false,
+      requiresCompanySelection: false,
+    }), false);
   });
 
   test('the page consumes the catalog, changes source identity, and keys chat by company', () => {

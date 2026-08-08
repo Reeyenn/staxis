@@ -174,6 +174,11 @@ function rowToCompanyFinding(row: CompanyFindingRow): CompanyFinding {
     judgedAt: null,
     judgedModel: null,
     judgedGuardRejected: false,
+    // `company_findings` has no judged_* columns at all (see 0361), and the
+    // companion does not speak about portfolio cards. Null is the honest value
+    // and means the template question stands, which it always will here.
+    judgedQuestion: null,
+    judgedReplyOrder: null,
   };
 }
 

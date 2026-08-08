@@ -249,12 +249,53 @@ describe('create_todo + add_logbook_entry', () => {
     assert.equal(createdTasks.length, 0, 'nothing may be written for somebody who cannot see it');
   });
 
+  test('create_todo refuses to route a to-do to the housekeeping DEPARTMENT', async () => {
+    // The per-person guard above was only half the rule. A department row is
+    // delivered to viewers IN that department and to nobody else, and it is
+    // held out of the author's own drawer until somebody else settles it — so
+    // "a to-do for housekeeping to deep clean the lobby carpet" was written,
+    // acknowledged with a success receipt, and existed on zero screens.
+    const res = await executeTool(
+      'create_todo',
+      { title: 'deep clean the lobby carpet', department: 'housekeeping' },
+      ctx(),
+    );
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? '', /housekeeping board/i);
+    // Says what to do instead. A refusal the model cannot turn into an offer is
+    // just a dead end for the manager who asked. The sentence itself is owned by
+    // worklist/assignable.ts, which the to-do route and comms/core.ts refuse
+    // with too, so this asserts the way through the tool actually relays.
+    assert.match(res.error ?? '', /put it on their board/i);
+    assert.equal(createdTasks.length, 0, 'nothing may be written that lands on no screen');
+  });
+
+  test('create_todo still routes to the departments that DO read the list', async () => {
+    const res = await executeTool(
+      'create_todo',
+      { title: 'reset the lobby printer', department: 'maintenance' },
+      ctx(),
+    );
+    assert.equal(res.ok, true, res.error ?? '');
+    assert.equal(createdTasks.length, 1);
+    assert.equal(createdTasks[0].assigned_department, 'maintenance');
+  });
+
   test('add_logbook_entry writes an entry as the caller', async () => {
     const res = await executeTool('add_logbook_entry', { title: 'elevator 2 down 2-4pm', category: 'maintenance' }, ctx());
     assert.equal(res.ok, true);
     assert.equal(createdLogs.length, 1);
     assert.equal(createdLogs[0].author_staff_id, CALLER_STAFF);
     assert.equal(createdLogs[0].category, 'maintenance');
+  });
+
+  test('the log book still files under housekeeping, because somebody reads it', async () => {
+    // The to-do refusal above is about DELIVERY, not about the word. A log entry
+    // is read by whoever opens the book, so filing one under housekeeping
+    // reaches exactly the people it should.
+    const res = await executeTool('add_logbook_entry', { title: 'ran low on towels', category: 'housekeeping' }, ctx());
+    assert.equal(res.ok, true, res.error ?? '');
+    assert.equal(createdLogs[0].category, 'housekeeping');
   });
 
   test('create_todo refuses when the caller has no staff identity (no anonymous row)', async () => {

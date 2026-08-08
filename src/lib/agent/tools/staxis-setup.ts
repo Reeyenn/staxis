@@ -574,11 +574,11 @@ interface CompanyRuleParams {
  *  useful — "that goes to Jay" beats "you are not allowed". */
 async function editorNames(organizationId: string): Promise<string[]> {
   const choice = await companyAccessSetting(organizationId, 'rulebook_editors');
+  // `company_scope` and `owner_and_vp` name the same two people now that
+  // `finance` is retired. Both are still accepted stored values.
   const roles: AuthorityApproverRole[] = choice === 'owner_only'
     ? ['owner']
-    : choice === 'company_scope'
-      ? ['owner', 'vp', 'finance']
-      : ['owner', 'vp'];
+    : ['owner', 'regional_manager'];
   try {
     const directory = await loadApproverDirectory(organizationId);
     const names = new Set<string>();

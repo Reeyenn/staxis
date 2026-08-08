@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import MarketingLanding from '@/app/_components/MarketingLanding';
+import ExistingSessionEntryRedirect from '@/app/_components/ExistingSessionEntryRedirect';
 
 export const dynamic = 'force-static';
 
@@ -10,5 +11,9 @@ export const metadata: Metadata = {
 };
 
 export default function LandingPage() {
-  return <MarketingLanding />;
+  return (
+    <ExistingSessionEntryRedirect>
+      <MarketingLanding />
+    </ExistingSessionEntryRedirect>
+  );
 }

@@ -25,7 +25,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
-import type { AiCostFeature } from '@/lib/ai/types';
+import type { AiCostFeature, AiNonRequestCostKind } from '@/lib/ai/types';
 import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS } from './llm';
 
 /**
@@ -402,7 +402,10 @@ export async function recordNonRequestCost(opts: {
   tokensOut: number;
   cachedInputTokens?: number;
   costUsd: number;
-  kind: 'eval' | 'background' | 'audio' | 'vision';
+  /** Typed from `AI_COST_KINDS` minus `request`, so the database CHECK, the
+   *  writers and the spend screens' fold all move together. A new kind added to
+   *  that list is a compile error here until somebody decides what it is. */
+  kind: AiNonRequestCostKind;
 }): Promise<void> {
   if (opts.costUsd <= 0) return;
   const insertRow = (conversationId: string | null) => ({

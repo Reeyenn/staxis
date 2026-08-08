@@ -32,7 +32,6 @@ import { AlertCircle, CheckCircle2, Trash2, UserRoundCog } from 'lucide-react';
 
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { addStaffMember, updateStaffMember } from '@/lib/db';
 import type { SchedulePriority, StaffDepartment, StaffMember } from '@/types';
 
 import type { HotelTeamLang } from './HotelTeamPanel';
@@ -54,9 +53,6 @@ export interface EmploymentLinkAccount {
 
 export interface PersonEmploymentFormProps {
   hotelId: string;
-  /** Legacy first argument on the db/* helpers. Ignored by them; kept so the
-   *  call sites stay identical to the ones this was ported from. */
-  uid: string;
   lang: HotelTeamLang;
   /** The person's employment record, or null when they only have a login. */
   staff: StaffMember | null;
@@ -138,7 +134,6 @@ function draftFrom(
 
 export function PersonEmploymentForm({
   hotelId,
-  uid,
   lang,
   staff,
   accounts,
@@ -254,27 +249,31 @@ export function PersonEmploymentForm({
         // file header. They travel over their own service-role routes below.
       };
 
-      // Hard timeout on the roster write: a wedged Supabase auth lock would
-      // otherwise leave this dialog spinning forever.
+      // Hard timeout on the roster write: a wedged request would otherwise
+      // leave this dialog spinning forever.
       const existingId = staffId ?? createdIdRef.current;
       let savedStaffId: string | null = existingId;
-      const write: Promise<unknown> = existingId
-        ? updateStaffMember(uid, hotelId, existingId, record)
-        // scheduledToday is DEPRECATED (2026-07-24) — a non-date-aware boolean
-        // nothing writes. Housekeeping derives who is working from
-        // scheduled_shifts. Kept only for the NOT NULL column default.
-        : addStaffMember(uid, hotelId, {
-            ...record,
-            isActive: true,
-            scheduledToday: false,
-            weeklyHours: 0,
-          })
-            .then((newId: string | void) => {
-              if (typeof newId === 'string') {
-                savedStaffId = newId;
-                createdIdRef.current = newId;
-              }
-            });
+      const write: Promise<unknown> = (async () => {
+        const response = await fetchWithAuth('/api/staff/operational', {
+          method: existingId ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(
+            existingId
+              ? { hotelId, staffId: existingId, ...record }
+              : { hotelId, ...record },
+          ),
+        });
+        const payload = await response.json().catch(() => null) as
+          { ok?: boolean; error?: string; data?: { staffId?: string } } | null;
+        if (!response.ok || payload?.ok !== true) {
+          throw new Error(payload?.error || 'Save failed.');
+        }
+        const newId = payload.data?.staffId;
+        if (!existingId && typeof newId === 'string') {
+          savedStaffId = newId;
+          createdIdRef.current = newId;
+        }
+      })();
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(

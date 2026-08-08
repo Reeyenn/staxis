@@ -119,6 +119,11 @@ const CX_CSS = `
   flex-shrink:0;padding:0;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .cx-avatarbtn::before{content:"";position:absolute;z-index:-1;inset:6px;border-radius:50%;background:#1F231C;}
 .cx-avatarbtn:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+/* Switched sessions wear a ring in the 6px gutter the disc leaves free. Quiet
+   enough to live in the bar all day, loud enough that a tab left open for an
+   hour never passes for your own account. */
+.cx-avatarbtn.cx-switched::after{content:"";position:absolute;z-index:-1;inset:1px;border-radius:50%;
+  border:2px solid #B8863D;}
 
 /* Dropdown card under the avatar */
 .cx-menu{position:absolute;right:0;top:calc(100% + 10px);background:#fff;
@@ -138,6 +143,20 @@ const CX_CSS = `
 .cx-menu-item.cx-phone-item{margin-top:7px;border-top:1px solid rgba(31,35,28,.08);padding-top:11px;}
 .cx-menu-item.cx-install-item{min-height:44px;color:#356B4C;font-weight:600;}
 .cx-menu-item.cx-danger{color:#B85C3D;border-top:1px solid rgba(31,35,28,.08);}
+/* ── Switch account ── */
+.cx-menu-switched{padding:9px 16px;background:rgba(184,134,61,.10);color:#7A5620;
+  font-size:11px;font-weight:600;border-bottom:1px solid rgba(184,134,61,.22);}
+.cx-menu-item.cx-menu-return{color:#7A5620;font-weight:600;min-height:40px;}
+.cx-menu-item.cx-menu-person{align-items:flex-start;padding-top:7px;padding-bottom:7px;}
+.cx-menu-item.cx-menu-person svg{margin-top:2px;flex-shrink:0;}
+.cx-menu-person-text{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.cx-menu-person-name{font-size:13px;line-height:1.25;}
+.cx-menu-person-role{font-size:10px;color:#8A9187;line-height:1.3;}
+.cx-menu-item.cx-menu-person.cx-on .cx-menu-person-role{color:#4C7A5E;}
+.cx-menu-item:disabled{cursor:default;opacity:.65;}
+.cx-menu-item.cx-menu-person.cx-on:disabled{opacity:1;}
+.cx-menu-note{padding:8px 16px;font-size:11px;color:#B85C3D;
+  border-top:1px solid rgba(31,35,28,.08);}
 
 /* ── Home hub ── */
 /* Reeyen wanted the whole hub a touch larger — greeting, Ask bar, Talk
@@ -628,6 +647,9 @@ const FEED_CSS = `
 .fx-suggi{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;flex-shrink:0;
   background:rgba(158,183,166,.22);color:#9EB7A6;animation:fx-pulsering 3s ease-out infinite;}
 .fx-suggt{font-size:13px;line-height:1.5;color:#EDF1EC;}
+/* The question over the buttons. Only present when a model wrote one, so the
+   card's spacing when it is absent is byte-identical to what shipped. */
+.fx-inkq{font-size:13.5px;color:#EDF1EC;margin-top:14px;line-height:1.5;}
 .fx-inkacts{display:flex;align-items:center;gap:9px;margin-top:16px;flex-wrap:wrap;position:relative;}
 .fx-ib{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 14px;border-radius:10px;
   border:none;background:rgba(255,255,255,.09);color:#fff;font-size:13px;font-weight:500;cursor:pointer;
@@ -642,9 +664,21 @@ const FEED_CSS = `
 .fx-ib.fx-more{margin-left:auto;width:36px;padding:0;justify-content:center;color:#B9C0B8;font-size:16px;
   letter-spacing:.08em;}
 .fx-ib.fx-warn{color:#E8A87C;}
-.fx-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:20;min-width:206px;overflow:hidden;
+/* ── The card's overflow menu ──────────────────────────────────────────────
+   FIXED, and drawn from a portal on the document body. It used to be
+   position:absolute inside .fx-ink-card, whose own rule is overflow:hidden, so
+   it opened below the last row of the card, into space the card does not have,
+   and was clipped to a sliver under the following card. No z-index could have
+   saved it: overflow clips descendants whatever their stacking order, and the
+   card's hover transform makes it a containing block for fixed children too.
+   The fix is to stop being its descendant. Coordinates: placeCardMenu. */
+.fx-menu{position:fixed;z-index:60;min-width:206px;overflow-y:auto;overscroll-behavior:contain;
   background:#2A2F27;border:1px solid rgba(255,255,255,.12);border-radius:12px;
   box-shadow:0 22px 44px -22px rgba(0,0,0,.75);}
+/* The way out that is not one of the menu's own items. Transparent, and under
+   the menu, so the first click anywhere else closes it and nothing else. */
+.fx-menu-scrim{position:fixed;inset:0;z-index:59;background:transparent;border:none;
+  padding:0;cursor:default;}
 .fx-menu button{display:block;width:100%;text-align:left;padding:10px 14px;border:none;background:transparent;
   color:#EDF1EC;font-size:12.5px;font-family:inherit;cursor:pointer;}
 .fx-menu button:hover:not(:disabled){background:rgba(255,255,255,.08);}

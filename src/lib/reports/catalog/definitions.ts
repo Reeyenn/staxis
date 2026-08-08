@@ -23,6 +23,7 @@
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { reorderListLabel } from '@/lib/stock-status';
 import { getInventoryAccountingSummary, localMonthWindowUTC } from '@/lib/db/inventory-accounting';
 import { ACTIVITY_CATEGORIES } from '@/lib/activity-log/types';
 import type {
@@ -382,6 +383,8 @@ const inventorySpend: ReportDefinition = {
   },
   category: 'inventory',
   defaultRange: 'mtd',
+  // Budgets, purchases, usage and discards, all in dollars.
+  requiresFinancials: true,
   run: async (ctx): Promise<ReportRunResult> => {
     // Usage is an immutable calendar-month fact. Consume only months fully
     // enclosed by the selected range; never widen Last 7 / Last 30 / custom to
@@ -552,9 +555,12 @@ const inventoryLowStock: ReportDefinition = {
       const reorder = it.reorder_at != null ? Number(it.reorder_at) : par * 0.7;
       const needsReorder = par > 0 ? stock <= reorder : stock <= 0;
       if (!needsReorder) continue;
-      // 70/30 thresholds vs par (CLAUDE.md status colors).
+      // The one house 70/30 rule (src/lib/stock-status.ts). This used to be an
+      // inline `<=` on both boundaries, which put exactly 70% of par in "Low"
+      // and exactly 30% in "Critical" — one step redder than the Inventory
+      // board painted the very same item.
       const pct = par > 0 ? stock / par : 0;
-      const status = pct <= 0.3 ? 'Critical' : pct <= 0.7 ? 'Low' : 'Reorder';
+      const status = reorderListLabel(stock, par);
       if (status === 'Critical') critical += 1;
       else if (status === 'Low') low += 1;
       out.push({

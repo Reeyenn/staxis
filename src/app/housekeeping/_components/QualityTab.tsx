@@ -631,7 +631,7 @@ export function QualityTab() {
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div style={{
+    <div className="hk-quality-page" style={{
       padding: '24px 48px 130px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
@@ -654,13 +654,14 @@ export function QualityTab() {
             {'Inspections + crew performance · combined'}
           </Caps>
         </div>
-        <div style={{
+        <div className="hk-quality-range" style={{
           background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 999,
           padding: 4, display: 'flex', gap: 2,
         }}>
           {ranges.map((r) => (
             <button
               key={r.k}
+              className="hk-quality-range-option"
               onClick={() => setView(r.k)}
               style={{
                 padding: '7px 14px', borderRadius: 999, border: 'none', cursor: 'pointer',
@@ -678,7 +679,7 @@ export function QualityTab() {
       <StatBand stats={stats} lang={lang} />
 
       {/* TWO-COLUMN BOARD */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 18, alignItems: 'flex-start' }}>
+      <div className="hk-quality-board" style={{ display: 'grid', gap: 18, alignItems: 'flex-start' }}>
 
         {/* LEFT — INSPECTIONS */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -815,8 +816,8 @@ export function QualityTab() {
                 {'Do these long cleans count toward averages?'}
               </p>
               {flagged.map((f) => (
-                <div key={f.id} style={{
-                  display: 'grid', gridTemplateColumns: '52px 1fr 50px auto',
+                <div key={f.id} className="hk-quality-flagged-row" style={{
+                  display: 'grid', gridTemplateColumns: '52px minmax(0, 1fr) 50px auto',
                   gap: 10, alignItems: 'center', padding: '10px 0', borderTop: `1px solid ${T.ruleSoft}`,
                 }}>
                   <span style={{
@@ -889,7 +890,7 @@ function StatBand({ stats, lang }: { stats: InspectionStats | null; lang: 'en' |
   };
   const reClean = stats?.reCleanRatePct ?? 0;
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 18 }}>
+    <div className="hk-quality-stat-band" style={{ display: 'grid', gap: 12, marginBottom: 18 }}>
       {/* Pass rate today — hero */}
       <div style={{
         ...cardBase,
@@ -929,6 +930,7 @@ function StatBand({ stats, lang }: { stats: InspectionStats | null; lang: 'en' |
 function FilterPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
     <button
+      className="hk-quality-filter"
       onClick={onClick}
       style={{
         height: 26, padding: '0 12px', borderRadius: 999,
@@ -1018,7 +1020,7 @@ function Leaderboard({
   paceFor: (s: StaffStats) => 'fast' | 'on' | 'slow';
   staffShape: (s: { staffId: string; name: string }) => Pick<StaffMember, 'id' | 'name'>;
 }) {
-  const cols = '24px 1fr 44px 58px 84px';
+  const cols = '24px minmax(0, 1fr) 44px 58px 84px';
   return (
     <div>
       <div style={{
@@ -1324,13 +1326,13 @@ function ChecklistRow({
   const isFail = draft.state === 'minor' || draft.state === 'major' || draft.state === 'critical';
   const isCritical = draft.state === 'critical';
   return (
-    <div style={{
+    <div className="hk-quality-checklist-row" style={{
       border: `1px solid ${isFail ? (isCritical ? 'rgba(184,92,61,0.55)' : 'rgba(184,92,61,0.35)') : T.rule}`,
       borderRadius: 12, padding: '11px 13px',
       background: isFail ? (isCritical ? T.redDim : T.warmDim) : T.paper,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ flex: 1, fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink }}>
+      <div className="hk-quality-checklist-controls" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div className="hk-quality-checklist-label" style={{ flex: 1, fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink }}>
           {label}
           {item.requiresPhotoOnFail && (
             <span style={{ marginLeft: 6, color: T.warm, fontSize: 9, fontFamily: FONT_MONO }}>
@@ -1338,7 +1340,7 @@ function ChecklistRow({
             </span>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div className="hk-quality-severity-group" style={{ display: 'flex', gap: 4 }}>
           <SevButton label={'Pass'} active={draft.state === 'pass'} tone="sage" onClick={() => onState('pass')} />
           <SevButton label={'Minor'} active={draft.state === 'minor'} tone="warm" onClick={() => onState('minor')} />
           <SevButton label={'Major'} active={draft.state === 'major'} tone="warm" onClick={() => onState('major')} />
@@ -1348,6 +1350,7 @@ function ChecklistRow({
       {isFail && (
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
           <input
+            className="hk-quality-note-input"
             type="text"
             placeholder={'Note (what to fix)'}
             value={draft.note}
@@ -1358,7 +1361,7 @@ function ChecklistRow({
             }}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <label style={{
+            <label className="hk-quality-photo-label" style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 999,
               border: `1px solid ${T.rule}`, background: T.paper, fontFamily: FONT_SANS, fontSize: 12, color: T.ink, cursor: 'pointer',
             }}>
@@ -1397,6 +1400,7 @@ function SevButton({
   }[tone];
   return (
     <button
+      className="hk-quality-severity-button"
       onClick={onClick}
       style={{
         height: 26, padding: '0 9px', borderRadius: 999,

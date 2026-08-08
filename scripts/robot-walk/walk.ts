@@ -34,6 +34,10 @@
 
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from 'playwright';
 import {
+  anchorCensusDetail,
+  anchorCensusPages,
+  anchorsExpectedAt,
+  composerNamesAssignee,
   isRobotWalkArtifact,
   runRobotWalk,
   summarizeRobotWalk,
@@ -270,7 +274,10 @@ function buildSteps(page: Page): RobotWalkStep[] {
 
         await page.getByRole('radio', { name: ASSIGNEE, exact: true }).click({ timeout: ACTION_MS });
         const label = await who.getAttribute('aria-label');
-        if (!label || !label.includes(ASSIGNEE)) {
+        // The button says the person's FIRST name, by design. Asserting the
+        // full name here is what made this step fail every night for a reason
+        // that had nothing to do with the app. See composerNamesAssignee.
+        if (!composerNamesAssignee(label, ASSIGNEE)) {
           throw new Error(`Picked ${ASSIGNEE} but the composer still says "${label ?? 'nothing'}".`);
         }
 
@@ -380,6 +387,47 @@ function buildSteps(page: Page): RobotWalkStep[] {
         // An empty roster on a hotel that was seeded with two people is the
         // silent-empty-state failure this whole exercise exists to catch.
         if (people === 0) throw new Error('The staff list rendered with nobody on it.');
+      },
+    },
+    {
+      // ─── The anchor census ────────────────────────────────────────────────
+      //
+      // Every control the companion is allowed to point at, checked for real,
+      // in a real browser, on the real deploy. See ANCHOR_CENSUS_LOCATIONS for
+      // why this is the only honest place to check it and why the location map
+      // is separate from the anchor registry's own `page`.
+      //
+      // It asserts three things per anchor, in order, because each catches a
+      // different way of breaking it: the attribute is in the DOM (somebody
+      // kept the button and dropped the handle), exactly one node carries it
+      // (a copy-paste that would make the arrow pick whichever came first),
+      // and it measures as something (the control is inside a branch that is
+      // rendered but hidden, which is what the pointer itself refuses to draw
+      // at). It never clicks anything.
+      id: 'anchor-census',
+      run: async () => {
+        const missing: string[] = [];
+        for (const url of anchorCensusPages()) {
+          await goto(page, url);
+          // One anchor of any kind proves the shell has painted. Without this
+          // the census races the first render and reports every key missing,
+          // which is the false alarm that would get it switched off.
+          await page.locator('[data-staxis-anchor]').first().waitFor({ timeout: ACTION_MS });
+          for (const key of anchorsExpectedAt(url)) {
+            const found = page.locator(`[data-staxis-anchor="${key}"]`);
+            try {
+              await found.first().waitFor({ state: 'visible', timeout: 4_000 });
+            } catch {
+              missing.push(key);
+              continue;
+            }
+            const count = await found.count();
+            if (count !== 1) { missing.push(`${key} (${count} of them)`); continue; }
+            const box = await found.first().boundingBox();
+            if (!box || box.width <= 0 || box.height <= 0) missing.push(`${key} (measures as nothing)`);
+          }
+        }
+        if (missing.length > 0) throw new Error(anchorCensusDetail(missing));
       },
     },
     {

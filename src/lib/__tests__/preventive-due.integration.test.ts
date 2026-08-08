@@ -109,8 +109,11 @@ async function scheduleRow(id: string) {
     last_completed_by: string | null;
     called_at: Date | string | null;
     called_by: string | null;
+    skipped_at: Date | string | null;
+    skipped_by: string | null;
   }>(
-    'select last_completed_at, last_completed_by, called_at, called_by from public.preventive_tasks where id = $1',
+    'select last_completed_at, last_completed_by, called_at, called_by, skipped_at, skipped_by'
+    + ' from public.preventive_tasks where id = $1',
     [id],
   );
   const row = r.rows[0];
@@ -122,6 +125,8 @@ async function scheduleRow(id: string) {
     lastDoneBy: row.last_completed_by,
     calledMs: ms(row.called_at),
     calledBy: row.called_by,
+    skippedMs: ms(row.skipped_at),
+    skippedBy: row.skipped_by,
   };
 }
 
@@ -450,6 +455,37 @@ describe('preventive maintenance, proven against a real database', () => {
       // completion would restart the clock on a job nobody has performed, and
       // Staxis would then stay silent about it for a full cadence.
       assert.equal(after!.lastDoneMs, before!.lastDoneMs);
+    });
+
+    test('it retires a skip, so the schedule never rests on two grounds at once', async () => {
+      // A manager puts one occurrence down ("Skip this one" on the Staxis list),
+      // then a fortnight later actually arranges a vendor and taps "Somebody's
+      // been called" on the card. Both readers check SKIPPED FIRST, so a skip
+      // left standing keeps the schedule quiet for the rest of a cadence — most
+      // of a year on a six-monthly job — while the call sits there recorded and
+      // doing nothing. The list's own version of this button has always cleared
+      // it; this one did not.
+      const id = await addSchedule(PID_A, 'Water heater flush', 180, 200);
+      await runFindingsForProperty(PID_A, ONLY_PM);
+      const [findingId] = await queueIds(PID_A);
+      assert.ok(findingId, 'an overdue schedule should have produced a card');
+
+      // The occurrence gets put down first; the vendor is arranged after.
+      await pg.query(
+        `update public.preventive_tasks
+            set skipped_at = now() - interval '14 days', skipped_by = 'Dana'
+          where id = $1`,
+        [id],
+      );
+      const before = await scheduleRow(id);
+
+      await verdict(PID_A, findingId, 'pm_called');
+
+      const after = await scheduleRow(id);
+      assert.ok(after!.calledMs, 'the call is recorded');
+      assert.equal(after!.skippedMs, null, 'and the skip it replaces is retired');
+      assert.equal(after!.skippedBy, null);
+      assert.equal(after!.lastDoneMs, before!.lastDoneMs, 'and nothing claims the job was done');
     });
 
     test('the card goes quiet for the whole follow-up window', async () => {

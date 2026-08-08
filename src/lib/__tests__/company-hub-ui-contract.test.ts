@@ -13,7 +13,6 @@ const homeHub = source('src', 'components', 'concourse', 'HomeHubView.tsx');
 const homeSummary = source('src', 'app', 'api', 'home', 'summary', 'route.ts');
 const concourseCss = source('src', 'components', 'concourse', 'concourse-css.tsx');
 const liveSurface = source('src', 'app', 'admin', '_components', 'studio', 'surfaces', 'LiveSurface.tsx');
-const invitation = source('src', 'app', '(public)', 'company-invite', '[token]', 'page.tsx');
 const authShell = source('src', 'components', 'AuthShell.tsx');
 const company = source('src', 'app', '(hotel)', 'company', 'page.tsx');
 const companyCss = source('src', 'app', '(hotel)', 'company', 'CompanyAccess.module.css');
@@ -47,19 +46,32 @@ describe('company-only shell routing', () => {
     assert.match(concourse, /if \(m\.key === 'staxis'\) return portfolioQueueAvailable/);
   });
 
+  // Two different people arrive at Home with no hotel showing, and they need
+  // opposite things: somebody who works for several companies has to CHOOSE,
+  // and somebody with no company and no hotel has to be sent to the hotel
+  // picker. Telling them apart is what `resolveHomeEntry` does — the count of
+  // company options is the whole difference — and the decision's behaviour is
+  // exercised directly in company-mode-scope.test.ts. What this pins is that
+  // Home still asks that question and still wires both answers.
   test('distinguishes an unselected portfolio from a truly zero-property company user', () => {
     assert.match(home, /const portfolio = usePortfolio\(\)/);
-    assert.match(home, /portfolio\.data\.selection\.state === 'selected'/);
-    assert.match(home, /portfolio\.data\.selection\.state === 'needs_selection'/);
+    assert.match(home, /const companyOptions = portfolio\.data\?\.contexts \?\? \[\]/);
+    assert.match(home, /resolveHomeEntry\(\{[\s\S]{0,240}?companyOptionCount: companyOptions\.length/);
     assert.match(home, /const portfolioEntryPending = shouldWaitForPortfolioEntry\(\{[\s\S]{0,100}?hotelDrilldown,[\s\S]{0,100}?portfolioLoading: portfolio\.loading/);
-    assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
+    assert.match(home, /entry\.kind === 'choose_scope'/);
     assert.match(home, /replaceNavigation\('\/property-selector'\)/);
   });
 
-  test('a two-company My Portfolio link reaches a terminal company chooser', () => {
-    assert.match(company, /portfolioNeedsSelection[\s\S]{0,220}?router\.replace\('\/portfolio\/choose'\)/);
+  // Company view is a MODE of this app now, so "several companies and none
+  // chosen" is answered by the switcher in the app rather than by a separate
+  // picker screen. Both the redirect and the empty state send the person into
+  // the app; neither may reopen the retired /portfolio/choose world.
+  test('a two-company My Portfolio link sends the person to the in-app switcher', () => {
+    assert.match(company, /portfolioNeedsSelection[\s\S]{0,260}?router\.replace\('\/home'\)/);
     assert.match(company, /title=\{'Choose a management company'\}/);
+    assert.match(company, /onAction=\{\(\) => router\.push\('\/home'\)\}/);
     assert.match(company, /&& !portfolioNeedsSelection/);
+    assert.doesNotMatch(company, /'\/portfolio\/choose'/);
   });
 });
 
@@ -136,17 +148,6 @@ describe('admin hotel directory safeguards', () => {
   });
 });
 
-describe('company invitation accessibility', () => {
-  test('registration controls have explicit labels and announced errors', () => {
-    assert.match(invitation, /htmlFor="company-invite-display-name"/);
-    assert.match(invitation, /id="company-invite-display-name"/);
-    assert.match(invitation, /htmlFor="company-invite-password"/);
-    assert.match(invitation, /htmlFor="company-invite-confirm-password"/);
-    assert.match(invitation, /aria-describedby=\{visibleError \? ['"]company-invite-error['"]/);
-    assert.match(authShell, /role="alert" aria-live="assertive"/);
-  });
-});
-
 describe('truthful Company Hub filters', () => {
   test('hotels use not-active semantics instead of calling every non-active row pending', () => {
     assert.match(company, /type HotelStatusFilter = ['"]all['"] \| ['"]active['"] \| ['"]not_active['"]/);
@@ -166,7 +167,6 @@ describe('truthful Company Hub filters', () => {
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
     assert.doesNotMatch(company, /Roles and scopes by person/);
     assert.match(company, /People with hotel access/);
-    assert.match(company, /data\.invitations\.map/);
   });
 
   test('selected-hotel People is one compact identity roster, not an operations dashboard', () => {
@@ -299,7 +299,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /<FilterBar[\s\S]*<OrganizationHierarchy/);
     assert.doesNotMatch(company, /Company relationship and status|Manage relationship/);
     assert.doesNotMatch(company, /AdminHotelRelationshipManager/);
-    assert.match(company, /title=\{['"]Memberships and invitations['"]\}/);
+    assert.match(company, /title=\{['"]Memberships['"]\}/);
     assert.match(company, /title=\{['"]People with hotel access['"]\}/);
     assert.match(company, /resolveCompanyAccessContext\(/);
     assert.match(company, /buildAccessPeople\(/);
@@ -364,7 +364,11 @@ describe('My Hotel account and team integration', () => {
     // No admin subtraction on any of these: an admin gets the hotel's actions.
     assert.match(company, /canInviteAccounts=\{canInviteAccounts\}/);
     assert.match(company, /canAddStaff=\{canAddOperationalStaff\}/);
-    assert.match(company, /!activeProperty && !canManageTeam && canInviteAccounts/);
+    // Company-level inviting lives on its own panel now. The condition this
+    // used to pin could never be satisfied, so it asserted the presence of a
+    // button no user could reach.
+    assert.match(company, /!showHotelPeople && companyInviteOrganizationId/);
+    assert.match(company, /<CompanyInvitePanel/);
     assert.doesNotMatch(company, /adminPreview \? false :/);
     assert.doesNotMatch(company, /<InvitePersonDialog/);
     assert.match(hotelTeam, /inviteDialogVisible && canInviteAccounts && !locked[\s\S]*canManageHotelRoster=\{false\}/);

@@ -76,13 +76,17 @@ describe('portfolio role entry and acting context', () => {
     );
     assert.match(portfolioServer, /mode: selectedCompany \? 'portfolio' : contexts\.length > 0 \? 'company_picker' : 'hotel'/);
 
-    assert.match(home, /portfolio\.data\.selection\.state === 'selected'/);
-    assert.match(home, /portfolio\.data\.selection\.state === 'needs_selection'/);
-    assert.match(home, /`\/portfolio\?organizationId=/);
-    assert.match(home, /'\/portfolio\/choose'/);
-    assert.match(propertySelector, /selection\.state === 'selected'/);
-    assert.match(propertySelector, /selection\.state === 'needs_selection'/);
-    assert.match(propertySelector, /`\/portfolio\?organizationId=/);
+    // Company view is a MODE of this app now. Both entry surfaces resolve the
+    // destination through companyEntryDestination, whose vocabulary contains no
+    // route in the standalone portfolio world at all (company-mode-scope.test.ts
+    // pins that). Neither surface may reintroduce one of its own.
+    assert.match(home, /resolveHomeEntry\(\{/);
+    assert.match(propertySelector, /companyEntryDestination\(portfolio\.data\?\.selection\)/);
+    assert.match(propertySelector, /if \(destination\) replaceNavigation\(destination\)/);
+    for (const entrySurface of [home, propertySelector]) {
+      assert.doesNotMatch(entrySurface, /'\/portfolio\/choose'/);
+      assert.doesNotMatch(entrySurface, /`\/portfolio\?organizationId=/);
+    }
     for (const entrySurface of [home, propertySelector]) {
       assert.doesNotMatch(entrySurface, /user\??\.role === ['"]vp['"]/);
     }
@@ -158,8 +162,8 @@ describe('hotel drilldown and return contract', () => {
     const homePage = home.slice(homePageStart);
     assert.match(homePage, /const hotelDrilldown = acting\?\.request\.kind === 'hotel'/);
     assert.match(homePage, /const portfolioEntryPending = shouldWaitForPortfolioEntry\(\{[\s\S]{0,100}?hotelDrilldown,[\s\S]{0,100}?portfolioLoading: portfolio\.loading/);
-    assert.match(homePage, /const portfolioDestination = !hotelDrilldown && portfolio\.data/);
-    assert.match(homePage, /if \(portfolioDestination\) \{[\s\S]{0,120}?replaceNavigation\(portfolioDestination\)/);
+    assert.match(homePage, /const entry = resolveHomeEntry\(\{[\s\S]{0,240}?scope: activeScope/);
+    assert.doesNotMatch(homePage, /portfolioDestination/);
   });
 });
 
@@ -269,7 +273,8 @@ describe('theme and motion accessibility', () => {
       /\.menuButton::after[\s\S]{0,120}?inset: -2px/,
     );
     assert.match(mobileConcourseCss, /\.avatar::after[\s\S]{0,120}?inset: -2px/);
-    assert.match(mobileConcourseCss, /grid-template-columns: 40px minmax\(0, 1fr\) 40px;/);
+    assert.match(mobileConcourseCss, /grid-template-columns: 40px minmax\(0, 1fr\) 44px 40px;/);
+    assert.match(mobileConcourseCss, /\.askSlot\s*\{[\s\S]*?width: 44px;[\s\S]*?height: 44px;/);
   });
 });
 

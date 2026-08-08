@@ -29,6 +29,14 @@ export function MessageRow({ m, grouped, dataMessageId, me, pid, L, conversation
   const isSystem = m.senderKind === 'system';
   const dept = (isStaxis ? 'management' : conversation.dept) as CommsDept;
   const active = activeThreadId === m.id;
+  // Announcements are one-way: POST /api/comms/send refuses an announcement
+  // conversation outright, before it even checks access. Offering the reply
+  // arrow anyway opened a drawer that could never send for anybody, so the
+  // person typed a reply and got a retry message forever. Only channels take a
+  // threaded reply; a DM has no threads and anything new fails closed.
+  // The other three tools here (acknowledge, pin, turn into task) go through
+  // routes that accept announcements, so they stay.
+  const canReplyInThread = conversation.kind === 'channel';
 
   if (isSystem) {
     return (
@@ -132,7 +140,7 @@ export function MessageRow({ m, grouped, dataMessageId, me, pid, L, conversation
       {hover && (
         <div style={{ position: 'absolute', top: -12, right: 16, display: 'flex', gap: 1, background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 8, boxShadow: '0 4px 14px rgba(31,35,28,.1)', padding: 2 }}>
           <button style={hoverTool} title={'Acknowledge'} onClick={() => onReactToggle(m)}><Check size={16} color={m.ackedByMe ? deptColorDark(T.forest) : T.dim} /></button>
-          {conversation.kind !== 'dm' && <button style={hoverTool} title={'Reply in thread'} onClick={() => onOpenThread(m)}><Reply size={16} /></button>}
+          {canReplyInThread && <button style={hoverTool} title={'Reply in thread'} onClick={() => onOpenThread(m)}><Reply size={16} /></button>}
           <button style={hoverTool} title={m.pinned ? 'Unpin' : 'Pin'} onClick={() => onPinToggle(m)}><Pin size={15} color={m.pinned ? deptColorDark(T.forest) : T.dim} /></button>
           <button style={hoverTool} title={'Turn into task'} onClick={() => onTurnIntoTask(m)}><ListTodo size={16} /></button>
         </div>

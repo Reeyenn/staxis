@@ -26,7 +26,8 @@ import assert from 'node:assert/strict';
 import Module from 'node:module';
 import type React from 'react';
 
-import { shouldReadDecisionBadge } from '@/components/concourse/queue-count';
+import { shouldReadDecisionBadge, shouldReadNewOnList } from '@/components/concourse/queue-count';
+import { listRendersFor, listStandingFor } from '@/lib/feed/list-access';
 import type { QueueFinding } from '@/components/concourse/finding-cards';
 import type { AppRole } from '@/lib/roles';
 
@@ -90,6 +91,58 @@ describe('who the shell asks for a decisions count', () => {
     assert.equal(shouldReadDecisionBadge(null, HOTEL), false);
     assert.equal(shouldReadDecisionBadge(undefined, HOTEL), false);
     assert.equal(shouldReadDecisionBadge({ role: 'general_manager' }, null), false);
+  });
+});
+
+// ─── 1b. the other half of the same pill ────────────────────────────────────
+//
+// The pill adds "N new things" to the decisions count, and that half had no
+// role gate at all. countNewOnList counts `all_staff` and `general` rows for
+// EVERYBODY, so a housekeeper's pill lit up with a number, they tapped it, and
+// the Staxis tab told them nothing there was theirs. Two screens of the same
+// product making opposite claims about the same rows.
+
+describe('who the shell counts new list rows for', () => {
+  const everyRole: AppRole[] = [
+    'admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance', 'staff',
+  ];
+  const standing = (role: AppRole | null, hotelMutationAllowed = true) => ({ role, hotelMutationAllowed });
+
+  test('the pill never counts what the page will not show', () => {
+    // The page's own rule, walked. Not a copy of it: if list-access ever changes
+    // who gets the Staxis tab, this asserts the pill changed with it.
+    for (const role of everyRole) {
+      assert.equal(
+        shouldReadNewOnList({ role }, HOTEL, standing(role)),
+        listRendersFor(listStandingFor(role, true)),
+        role,
+      );
+    }
+  });
+
+  test('a housekeeper is counted nothing, because they are shown nothing', () => {
+    assert.equal(shouldReadNewOnList({ role: 'housekeeping' }, HOTEL, standing('housekeeping')), false);
+  });
+
+  test('a front desk clerk IS counted, unlike the decisions half', () => {
+    // The asymmetry is the point: they have no decisions to make and they do
+    // have to-dos, so this is the first thing their pill has ever had to say.
+    assert.equal(shouldReadNewOnList({ role: 'front_desk' }, HOTEL, standing('front_desk')), true);
+    assert.equal(shouldReadDecisionBadge({ role: 'front_desk' }, HOTEL), false);
+  });
+
+  test('a reader with no standing at this hotel is counted nothing', () => {
+    // A company-scope reader drilling in, and the interval before the standing
+    // has resolved. Both fail closed rather than showing a number for a screen
+    // that is about to refuse them.
+    assert.equal(shouldReadNewOnList({ role: 'general_manager' }, HOTEL, standing('general_manager', false)), false);
+    assert.equal(shouldReadNewOnList({ role: 'general_manager' }, HOTEL, standing(null)), false);
+  });
+
+  test('signed out, or standing in no hotel, nobody is counted', () => {
+    assert.equal(shouldReadNewOnList(null, HOTEL, standing('general_manager')), false);
+    assert.equal(shouldReadNewOnList(undefined, HOTEL, standing('general_manager')), false);
+    assert.equal(shouldReadNewOnList({ role: 'general_manager' }, null, standing('general_manager')), false);
   });
 });
 

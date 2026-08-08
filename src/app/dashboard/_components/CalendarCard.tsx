@@ -41,7 +41,7 @@ function fmtRange(start: string, end: string | null, es: boolean): string {
 
 export function CalendarCard() {
   const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { activeProperty, activePropertyId } = useProperty();
   const { lang } = useLang();
   // Upcoming events live under Communications — hide this embed when that
   // section is off for the hotel (default-ON while loading).
@@ -67,7 +67,12 @@ export function CalendarCard() {
   // `today` is reactive (midnight rollover, same hook as the page hero) —
   // pinning it at fetch time left an ended event listed as "upcoming"
   // forever on an always-open dashboard.
-  const today = useTodayStr();
+  // The hotel's own calendar day, not America/Chicago (useTodayStr's default).
+  // "Has this event finished?" is a question about the hotel's date: on the
+  // default an event at an Eastern hotel stayed listed as upcoming for an hour
+  // after its last day ended, and one at a Hawaii hotel dropped off the card
+  // five hours before that day was over.
+  const today = useTodayStr(activeProperty?.timezone || undefined);
   const events = useMemo(() => {
     const list = data?.events ?? [];
     return list.filter((e) => (e.endDate ?? e.eventDate) >= today).slice(0, 4);

@@ -35,7 +35,7 @@ import dynamic from 'next/dynamic';
 import { useAuth } from '@/contexts/AuthContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS, SessionEndedError } from '@/lib/api-fetch';
-import { reportCompanionFlow } from '@/components/companion/companion-events';
+import { reportCompanionDeed, reportCompanionFlow } from '@/components/companion/companion-events';
 import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
@@ -312,10 +312,18 @@ export function StaxisList({
   // handed out" is a question this page always has to have answered: it used to
   // say "nothing has come back since you last looked" over eleven live
   // assignments, which is true about the last hour and useless about the work.
+  //
+  // LIVE, on the same 60 seconds as the work itself. A to-do handed to somebody
+  // is deliberately removed from the assigner's own list (taskVisibleToViewer),
+  // so this panel is the ONLY place it appears — and as a mount-time snapshot it
+  // showed a manager nothing at all until they reloaded the page. Worse, the
+  // "N back" counter beside it rides the worklist poll, so the frozen rows and
+  // the live number under them could disagree on the same panel. One cadence for
+  // both, and a foreground return re-reads rather than waiting out the interval.
   const { data: assignedData, error: assignedError, reload: reloadAssigned } =
     useApiResource<{ assigned: AssignedByMeItem[] }>(
       `/api/worklist?pid=${propertyId}&view=assigned-by-me`,
-      { enabled: !!propertyId, keepDataOnError: true },
+      { enabled: !!propertyId, pollMs: 60_000, revalidateOnFocus: true, keepDataOnError: true },
     );
   const assigned = React.useMemo(() => assignedData?.assigned ?? [], [assignedData]);
 
@@ -370,7 +378,11 @@ export function StaxisList({
           setReasonDraft('');
           closeMenu();
           await reloadWorklist();
-          if (drawerOpen) await reloadAssigned();
+          // Unconditionally, not just when the popup happens to be open. The
+          // rail panel shows the same rows on its face, so settling something
+          // with the popup shut used to leave a finished to-do sitting in the
+          // panel looking live until the page was reloaded.
+          await reloadAssigned();
         } catch (e) {
           if (e instanceof SessionEndedError) throw e;
           setRowError(ROW_MENU_COPY.failed);
@@ -379,7 +391,7 @@ export function StaxisList({
         }
       })();
     },
-    [propertyId, reloadWorklist, reloadAssigned, drawerOpen, closeMenu],
+    [propertyId, reloadWorklist, reloadAssigned, closeMenu],
   );
 
   /**
@@ -411,6 +423,10 @@ export function StaxisList({
           }
           closeMenu();
           await reloadWorklist();
+          // Handing a row to somebody takes it off this person's own list, so
+          // the Handed out panel is where it lives from now on. Same read, same
+          // reason as the composer below.
+          if (patch.assigneeStaffId !== undefined) await reloadAssigned();
         } catch (e) {
           if (e instanceof SessionEndedError) throw e;
           setRowError(ROW_MENU_COPY.failed);
@@ -419,7 +435,7 @@ export function StaxisList({
         }
       })();
     },
-    [propertyId, reloadWorklist, closeMenu],
+    [propertyId, reloadWorklist, reloadAssigned, closeMenu],
   );
 
   /**
@@ -587,6 +603,10 @@ export function StaxisList({
   const submitComposer = React.useCallback(() => {
     const payload = composerPayload(composer, meStaffId);
     if (!payload) return;
+    // Whether this row is leaving this person's own list. Read from the payload
+    // rather than from the chips, so it says what was actually sent.
+    const handedToSomebodyElse = payload.assignedDepartment !== null
+      || (payload.assignedStaffId !== null && payload.assignedStaffId !== meStaffId);
     cancelInterpret();
     void (async () => {
       setComposerBusy(true);
@@ -623,7 +643,19 @@ export function StaxisList({
         // The companion decides whether to say anything; it will say it at most
         // once, ever. See decideTeachMoment.
         reportCompanionFlow('create_task');
+        // The same moment, said to the tour instead of to the tip. A `try`
+        // stop standing on this screen waits for exactly this and nothing
+        // else, so it is fired AFTER the envelope came back clean: a to-do
+        // that failed to save must never advance a tour that then tells
+        // somebody it is on the list.
+        reportCompanionDeed('todo_created');
         await reloadWorklist();
+        // A to-do handed to somebody else never appears on the list we just
+        // reloaded: the assignment rule takes it off the assigner's own screen
+        // on purpose (taskVisibleToViewer). The Handed out panel is the only
+        // place it exists, so it has to be re-read here or a manager hands work
+        // to Dana and it lands nowhere at all until they reload the page.
+        if (handedToSomebodyElse) await reloadAssigned();
       } catch (e) {
         if (e instanceof SessionEndedError) throw e;
         setComposerError('That did not save. Try again in a moment.');
@@ -631,7 +663,7 @@ export function StaxisList({
         setComposerBusy(false);
       }
     })();
-  }, [composer, propertyId, reloadWorklist, meStaffId, todayIso, now, taught, markTaught, cancelInterpret]);
+  }, [composer, propertyId, reloadWorklist, reloadAssigned, meStaffId, todayIso, now, taught, markTaught, cancelInterpret]);
 
   /** Give up the row outright: the words, the answers, the open buttons. */
   const cancelComposer = React.useCallback(() => {

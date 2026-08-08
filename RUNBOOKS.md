@@ -2317,3 +2317,38 @@ reaches main.
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.
 
 The Prevention section is the most important — every new runbook entry should also add (or link to) a failsafe that automatically catches this failure type the next time.
+
+## Turning the 2FA switch back on does not, by itself, put the wall back up (auth sweep 2026-08-07)
+
+**Symptom.** You flip human 2FA back ON at `/admin` (or `POST /api/admin/settings`), the sign-in page starts asking for codes again, and you reasonably conclude the second factor is enforced. It is enforced on `/api/*` and nowhere else. Somebody holding only a stolen password can skip the app entirely, point a Supabase client at the database with the public anon key and their password-only token, and read and write roughly fifty tables including `staff`, `labor_wage_settings`, `financial_expenses`, `work_orders`, `schedule_assignments`, `inventory*` and `properties`.
+
+**Diagnosis.** There are two doors and they were answering different questions.
+
+- Door B is `requireSession` → `validateDeviceTrust` in `src/lib/api-auth.ts`. Strict. Guards `/api/*`.
+- Door A is the 117 RLS policies calling `public.mfa_verified_or_grace()`. It guards PostgREST and Realtime, which the browser talks to directly on the Supabase origin. It reads the `mfa_verified` JWT claim.
+
+`custom_access_token_hook` emits that claim ONLY when it is true (migration 0163). `mfa_verified_or_grace()` then read a MISSING claim as verified. A bare `signInWithPassword` produces exactly that: no claim. Confirm in one query:
+
+```sql
+select pg_get_functiondef('public.mfa_verified_or_grace()'::regprocedure);
+-- vulnerable if the body ends in coalesce(..., true)
+
+begin;
+select set_config('request.jwt.claims','{"sub":"00000000-0000-0000-0000-000000000001","role":"authenticated"}', true);
+select public.mfa_verified_or_grace();   -- true here means the door is open
+rollback;
+```
+
+Migration 0162 was written in May 2026 to fix this and never landed — `select version from applied_migrations where version = '0162'` returns nothing. 0166 (renumbered from 0159, so it runs after) re-created the permissive version, and 0311 carried it forward. 0311's own header says the tightening was deferred because `/api/auth/check-trust` did not write a per-session verification row, so a returning user on a trusted device had no claim and tightening would have blanked their app.
+
+**Fix.** Three steps, in this order. Skipping step 2 signs returning users into an empty app.
+
+1. Ship the `check-trust` session-binding change (`bindSessionVerification` in `src/app/api/auth/check-trust/route.ts`). It writes the `mfa_verified_sessions` row for the session whose cookie it just accepted. This grants no new authority: that cookie is already what Door B accepts on its own.
+2. Wait one full access-token lifetime (Supabase default one hour) so every live session refreshes once and picks up the claim. Watch `select count(*) from public.mfa_verified_sessions;` climb.
+3. Apply `supabase/migrations/0469_tighten_mfa_verified_grace.sql`, then `notify pgrst, 'reload schema';`
+
+**Verify.** Re-run the `set_config` probe above. It must return false with the switch ON and no claim, and true with the switch OFF.
+
+**Rollback.** Re-run 0311's body to restore `coalesce(..., true)`. One statement, no policy needs re-altering, which is the whole reason every gated policy calls the helper instead of inlining the expression.
+
+**Prevention.** `src/lib/__tests__/auth-check-trust-session-binding.test.ts` pins that check-trust binds the session. The deeper lesson is the renumbering trap: 0166 was renumbered from 0159 to resolve a collision, which silently moved it AFTER the 0162 that was meant to supersede its helper definition. Any migration that does `create or replace` on a shared function must be checked against every other migration that touches the same function, in file order, not in authoring order.

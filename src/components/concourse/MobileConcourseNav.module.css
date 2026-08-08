@@ -216,6 +216,29 @@
   font-weight: 600;
 }
 
+/* The way out of a switched session. Amber rather than the green admin
+   family, so it never reads as "another place to go". */
+.returnToAdminRow {
+  border: 1px solid rgba(184, 134, 61, 0.28);
+  color: #7a5620;
+  background: rgba(184, 134, 61, 0.1);
+  margin-bottom: 10px;
+}
+
+.returnToAdminRow:hover,
+.returnToAdminRow:active {
+  background: rgba(184, 134, 61, 0.18);
+}
+
+.returnToAdminRow .iconChip {
+  color: #7a5620;
+  background: rgba(184, 134, 61, 0.16);
+}
+
+.returnToAdminRow .rowLabel {
+  font-weight: 600;
+}
+
 .iconChip {
   display: grid;
   flex: none;
@@ -414,6 +437,10 @@
   white-space: nowrap;
 }
 
+.askSlot {
+  display: none;
+}
+
 .avatar {
   position: relative;
   display: grid;
@@ -465,13 +492,21 @@
     z-index: 42;
     display: grid;
     flex: none;
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    grid-template-columns: 40px minmax(0, 1fr) 44px 40px;
     align-items: center;
     width: 100%;
     min-height: calc(56px + env(safe-area-inset-top, 0px));
     padding: calc(8px + env(safe-area-inset-top, 0px)) 20px 8px;
     box-sizing: border-box;
     font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  .askSlot {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
   }
 }
 

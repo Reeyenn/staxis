@@ -89,6 +89,17 @@ export const FEATURE_CAP_SHARE: Readonly<Record<string, number>> = Object.freeze
   // enforce and bites at roughly a seventh of this number. If this cap is ever
   // the thing stopping a hotel, something upstream is wrong.
   'companion.event_wake': 0.1,
+  // The question over a companion card's replies. One batched call per hotel
+  // per NIGHT, riding the same pass the judge already runs, so its shape is the
+  // judge's and its size is a fraction of it: one short sentence per finding
+  // against the judge's two plus a rationale.
+  //
+  // A tenth, the same as the event sweep and for the opposite reason. The sweep
+  // is small because it is frequent; this is small because it is OPTIONAL. Every
+  // card it touches already has a correct template question, so a hotel that
+  // spends nothing here loses nothing it can see. A share that let this crowd
+  // the judge would be trading a card's WORDING for a card's EXISTENCE.
+  'companion.reply_question': 0.1,
 });
 
 /** An unlisted feature gets the brief's share rather than the judge's: a caller
@@ -129,6 +140,9 @@ export const FEATURE_ABANDON_MINUTES: Readonly<Record<string, number>> = Object.
   // shortest window on the table: longer than the call's own deadline and
   // shorter than the gap to the run after next.
   'companion.event_wake': 15,
+  // Nightly, one call, with a deadline in the tens of seconds. The judge's
+  // window, because it runs inside the judge's pass.
+  'companion.reply_question': 30,
 });
 
 const DEFAULT_ABANDON_MINUTES = 60;

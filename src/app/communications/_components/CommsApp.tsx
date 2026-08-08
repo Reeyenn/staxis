@@ -464,9 +464,24 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
 
         <div style={{ flex: 1, overflowY: 'auto', paddingTop: 4, paddingBottom: 14 }}>
 
-          <SidebarSection label={'Announcements'} onAdd={() => setSearchOpen(true)} tip={'Post an announcement'} />
+          {/* Posting an announcement happens in the announcements conversation's
+              own composer, so the + goes there rather than opening the search
+              palette, which is what it used to do under this exact tooltip. A
+              non-manager lands on the read-only notice, which is the true
+              answer to "can I post one". */}
+          <SidebarSection
+            label={'Announcements'}
+            onAdd={() => {
+              const feed = announce[0];
+              if (feed) selectConversation(feed.id);
+              else setSearchOpen(true);
+            }}
+            tip={'Post an announcement'}
+          />
           {announce.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
-          <SidebarSection label={'Channels'} onAdd={() => setSearchOpen(true)} tip={'Browse channels'} />
+          {/* The palette IS the browse surface for channels, so the behavior
+              stays and the tooltip stops promising something else. */}
+          <SidebarSection label={'Channels'} onAdd={() => setSearchOpen(true)} tip={'Find a channel'} />
           {channels.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
           <SidebarSection label={'Direct messages'} onAdd={() => setShowNew(true)} tip={'Start a direct message'} />
           {dms.length === 0 && <div style={{ padding: '4px 20px', fontSize: 12, color: T.dim, fontFamily: SANS }}>{'No conversations yet'}</div>}

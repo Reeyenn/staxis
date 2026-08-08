@@ -54,7 +54,7 @@ import {
   type SpendTotals,
 } from '@/lib/ai/employee-spend';
 import type { AiEmployee } from '@/lib/ai/employee-registry';
-import type { AiCostFeature } from '@/lib/ai/types';
+import { AI_COST_KINDS, type AiCostFeature } from '@/lib/ai/types';
 
 import { setupRlsFixture } from '../../../tests/fixtures/pglite-bootstrap';
 import { seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
@@ -640,6 +640,84 @@ describe('agent_costs.feature — the ledger learns which job spent the money', 
     assert.equal(round6(today.totalCostUsd), 1.00, 'user-facing spend is every request row, labelled or not');
     assert.equal(round6(today.backgroundCostUsd), 0.40);
     assert.equal(round6(today.evalCostUsd), 0.05);
+  });
+
+  /**
+   * THE HOLE THE TEST ABOVE COULD NOT SEE.
+   *
+   * That test books three kinds and checks three buckets, which is exactly the
+   * shape the bug had: migration 0117 added `audio` to the ledger and 0145 added
+   * `vision`, both of them taught the WRITERS and neither taught the readers. So
+   * voice notes and every photo, PDF and scanned page — the priciest calls the
+   * product makes — were recorded, capped, and then left out of every spend
+   * figure on the founder's dashboard.
+   *
+   * This drives one finalized row of EVERY kind the ledger permits, so the sum
+   * the screen quotes has to equal the sum of the rows. It is written over
+   * `AI_COST_KINDS` rather than over five literals for the same reason: a sixth
+   * kind should break this, not slip past it.
+   */
+  test('every kind of spending reaches the founder\'s figure, not just the three that existed first', async () => {
+    const perKindUsd = 0.11;
+    for (const kind of AI_COST_KINDS) {
+      await book({ feature: 'agent.ask_staxis', usd: perKindUsd, kind });
+    }
+    // Neither a hold nor a swept hold is money that was charged.
+    await book({ feature: 'agent.ask_staxis', usd: 9.99, kind: 'vision', state: 'reserved' });
+    await book({ feature: 'agent.ask_staxis', usd: 5.55, kind: 'audio', sweptAt: new Date().toISOString() });
+
+    const res = await metricsGET(authed('https://staxis.test/api/agent/metrics'));
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as Envelope<{
+      today: {
+        totalCostUsd: number; backgroundCostUsd: number; evalCostUsd: number;
+        visionCostUsd: number; audioCostUsd: number;
+        allKindsCostUsd: number; unbucketedKinds: string[];
+      };
+    }>;
+    const today = body.data!.today;
+
+    assert.equal(
+      round6(today.allKindsCostUsd),
+      round6(perKindUsd * AI_COST_KINDS.length),
+      'the figure Mission Control draws must be every finalized row today, whatever kind it is',
+    );
+    assert.deepEqual(today.unbucketedKinds, [], 'every permitted kind must have a bucket');
+
+    // And the breakdown adds back up to it, so the headline can be checked
+    // against its own parts rather than trusted.
+    const parts = today.totalCostUsd + today.backgroundCostUsd + today.evalCostUsd
+      + today.visionCostUsd + today.audioCostUsd;
+    assert.equal(round6(parts), round6(today.allKindsCostUsd));
+    for (const [label, usd] of [
+      ['vision', today.visionCostUsd],
+      ['audio', today.audioCostUsd],
+    ] as const) {
+      assert.equal(round6(usd), perKindUsd, `${label} spend must be reported, not dropped`);
+    }
+  });
+
+  /**
+   * The other half of the same screen: the number beside "Copilot" and the
+   * number on the Morning Briefer's card were BOTH counting background work, so
+   * the nightly wording pass appeared twice on one page. The light at the top is
+   * where the whole bill belongs; the copilot's line is the copilot's turns.
+   */
+  test('the copilot\'s line does not also bill it for the Morning Briefer\'s nightly pass', async () => {
+    await book({ feature: 'agent.ask_staxis', usd: 0.20, kind: 'request' });
+    await book({ feature: 'findings.brief', usd: 0.30, kind: 'background' });
+
+    const res = await metricsGET(authed('https://staxis.test/api/agent/metrics'));
+    const body = (await res.json()) as Envelope<{
+      today: { totalCostUsd: number; backgroundCostUsd: number; allKindsCostUsd: number };
+    }>;
+    const today = body.data!.today;
+
+    assert.equal(round6(today.allKindsCostUsd), 0.50, 'the light shows the whole day');
+    assert.equal(
+      round6(today.totalCostUsd), 0.20,
+      'the copilot\'s own line is its own turns; the Briefer\'s card already quotes the other row',
+    );
   });
 });
 

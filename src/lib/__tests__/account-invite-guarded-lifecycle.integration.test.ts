@@ -435,18 +435,22 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
     assert.deepEqual(sisterTamper, { ok: false, reason: 'denied' });
   });
 
-  test('company owner and VP obey exact company/property delegation', async () => {
-    const finance = await createGuarded(pg, {
+  test('company owner and regional manager obey exact company/property delegation', async () => {
+    // Maria is a regional manager. She used to be able to hire exactly one
+    // company job — `finance` — and 0464 retired that word, leaving her with
+    // none. She hires freely at hotel level; she hires nobody at company level.
+    const companyHire = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
       hotelId: PID_A1,
       email: 'controller@example.test',
-      role: 'finance',
+      role: 'regional_manager',
       organizationId: ORG_A,
       membershipScope: 'company',
-      requestId: 'vp-finance',
+      requestId: 'regional-peer-denied',
     });
-    assert.equal(finance.ok, true);
+    assert.deepEqual(companyHire, { ok: false, reason: 'denied' },
+      'a regional manager may not mint a peer');
     const ownerDenied = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
@@ -671,16 +675,23 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
     }]);
   });
 
+  // LUFKIN, NOT BEAUMONT, and that is the whole test. Maria wears two hats: a
+  // property GM job at Beaumont and company oversight over the rest of Gulf
+  // Coast. Ending the company hat while she is asked about Beaumont proves
+  // nothing, because the GM hat still authorizes her there — the revocation
+  // would look enforced while the other hat quietly carried the write. Lufkin
+  // is reachable ONLY through the hat being revoked.
   test('revoked company authority cannot create or revoke a persisted promise', async () => {
     const created = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
-      hotelId: PID_A1,
-      email: 'finance-before-revoke@example.test',
-      role: 'finance',
+      hotelId: PID_A2,
+      email: 'front-desk-before-revoke@example.test',
+      role: 'front_desk',
       organizationId: ORG_A,
-      membershipScope: 'company',
-      requestId: 'before-vp-revoke',
+      membershipScope: 'property',
+      propertyIds: [PID_A2],
+      requestId: 'before-regional-revoke',
     });
     assert.equal(created.ok, true);
     await asService(
@@ -691,12 +702,13 @@ describe('actor-bound account invitation lifecycle — real SQL', () => {
     const deniedCreate = await createGuarded(pg, {
       actorAccountId: ACCOUNT_MARIA,
       actorAuthUserId: UID_MARIA,
-      hotelId: PID_A1,
-      email: 'finance-after-revoke@example.test',
-      role: 'finance',
+      hotelId: PID_A2,
+      email: 'front-desk-after-revoke@example.test',
+      role: 'front_desk',
       organizationId: ORG_A,
-      membershipScope: 'company',
-      requestId: 'after-vp-revoke',
+      membershipScope: 'property',
+      propertyIds: [PID_A2],
+      requestId: 'after-regional-revoke',
     });
     assert.deepEqual(deniedCreate, { ok: false, reason: 'denied' });
     const deniedRevoke = await revokeGuarded(

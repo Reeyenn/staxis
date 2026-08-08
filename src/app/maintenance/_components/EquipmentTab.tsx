@@ -207,6 +207,7 @@ export function EquipmentTab() {
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -216,14 +217,32 @@ export function EquipmentTab() {
   // Load gate: don't render the happy "Storeroom is empty" state until the
   // first snapshot arrived; error card + retry when the load failed.
   const gate = useBoardGate(activePropertyId, 'inventory', loaded);
+  const boardReady = loaded && !loadError;
+  const boardUnavailable = loadError || gate.status === 'error';
 
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId) {
+      setLoaded(false);
+      setLoadError(false);
+      setItems([]);
+      setSelId(null);
+      return;
+    }
     setLoaded(false);
-    const unsub = subscribeToInventory(user.uid, activePropertyId, (rows) => {
-      setLoaded(true);
-      setItems(rows);
-    });
+    setLoadError(false);
+    setItems([]);
+    let initialSettled = false;
+    const unsub = subscribeToInventory(
+      user.uid,
+      activePropertyId,
+      (rows) => {
+        initialSettled = true;
+        setLoaded(true);
+        setLoadError(false);
+        setItems(rows);
+      },
+      () => { if (!initialSettled) setLoadError(true); },
+    );
     return () => unsub();
   }, [user, activePropertyId, gate.retryKey]);
 
@@ -248,6 +267,10 @@ export function EquipmentTab() {
     persisted: number;
     promise: Promise<boolean> | null;
     attempt: { value: number; requestId: string; countedAt: Date } | null;
+    // True between "our write was accepted" and "the realtime snapshot caught
+    // up". See the baseline note in setQty for why the snapshot cannot be
+    // trusted during that window.
+    awaitingEcho: boolean;
   }>>(new Map());
   const setQty = (id: string, qty: number): Promise<boolean> => {
     if (!user || !activePropertyId) return Promise.resolve(false);
@@ -255,31 +278,45 @@ export function EquipmentTab() {
     const pid = activePropertyId;
     const liveStock = items.find((item) => item.id === id)?.currentStock ?? 0;
     const desired = Math.max(0, qty);
-    if (liveStock === desired && !qtyPumps.current.get(id)?.promise) return Promise.resolve(true);
-    let pump = qtyPumps.current.get(id);
-    if (!pump) {
-      pump = { desired, persisted: liveStock, promise: null, attempt: null };
-      qtyPumps.current.set(id, pump);
-    } else if (!pump.promise) {
+    const pump = qtyPumps.current.get(id);
+    // WHAT THE ROW HOLDS RIGHT NOW, which is not always what `items` says. A
+    // write resolves on the RPC response; the realtime refetch that updates
+    // `items` lands a round trip later. Re-seeding from the snapshot inside that
+    // window overwrote a value we had just persisted, so the next tap went out
+    // with an expected count the row no longer had — and the atomic-count RPC
+    // rejects any mismatch. The tap was lost and the toast blamed the network.
+    // A value this pump persisted therefore stays authoritative until the
+    // snapshot agrees with it (or a write fails, below, which resyncs).
+    const baseline = pump && pump.awaitingEcho && liveStock !== pump.persisted
+      ? pump.persisted
+      : liveStock;
+    if (baseline === desired && !pump?.promise) return Promise.resolve(true);
+    let state = pump;
+    if (!state) {
+      state = { desired, persisted: baseline, promise: null, attempt: null, awaitingEcho: false };
+      qtyPumps.current.set(id, state);
+    } else if (!state.promise) {
       // Adopt the latest authoritative snapshot between tap bursts. If another
       // employee counted or received stock, the expected-stock guard below
       // will reject any stale modal value instead of overwriting their write.
-      pump.persisted = liveStock;
+      state.persisted = baseline;
+      state.awaitingEcho = baseline !== liveStock;
     }
-    pump.desired = desired;
-    if (pump.promise) return pump.promise; // running pump picks up `desired`
-    const state = pump;
-    state.promise = (async () => {
+    state.desired = desired;
+    if (state.promise) return state.promise; // running pump picks up `desired`
+    const pumped = state;
+    pumped.promise = (async () => {
       let ok = true;
+      let conflict = false;
       for (;;) {
-        const want = state.desired;
-        if (want === state.persisted) {
+        const want = pumped.desired;
+        if (want === pumped.persisted) {
           ok = true;
         } else {
-          if (!state.attempt || state.attempt.value !== want) {
-            state.attempt = { value: want, requestId: generateId(), countedAt: new Date() };
+          if (!pumped.attempt || pumped.attempt.value !== want) {
+            pumped.attempt = { value: want, requestId: generateId(), countedAt: new Date() };
           }
-          const attempt = state.attempt;
+          const attempt = pumped.attempt;
           try {
             await saveInventoryCountAtomic(
               uid,
@@ -287,24 +324,32 @@ export function EquipmentTab() {
               attempt.requestId,
               attempt.countedAt,
               user.displayName || user.username || 'team',
-              [{ itemId: id, expectedStock: state.persisted, countedStock: want }],
+              [{ itemId: id, expectedStock: pumped.persisted, countedStock: want }],
             );
-            state.persisted = want;
-            if (state.attempt === attempt) state.attempt = null;
+            pumped.persisted = want;
+            pumped.awaitingEcho = true;
+            if (pumped.attempt === attempt) pumped.attempt = null;
             ok = true;
-          } catch {
+          } catch (e) {
             ok = false;
+            conflict = (e as { code?: string } | null)?.code === '40001';
+            // Whatever we believed about the row is now unreliable. Fall back to
+            // the snapshot on the next tap so one rejection cannot wedge the
+            // stepper into rejecting every tap after it.
+            pumped.awaitingEcho = false;
           }
         }
-        if (state.desired === want) break; // no newer taps → settled
+        if (pumped.desired === want) break; // no newer taps → settled
       }
-      state.promise = null;
+      pumped.promise = null;
       if (!ok) {
-        flash("Couldn't save the count. Check your connection and try again.");
+        flash(conflict
+          ? 'Someone else just counted this item. Check the new number and try again.'
+          : "Couldn't save the count. Check your connection and try again.");
       }
       return ok;
     })();
-    return state.promise;
+    return pumped.promise;
   };
   const restock = (part: Part) => {
     void part;
@@ -342,13 +387,13 @@ export function EquipmentTab() {
     <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={'Equipment · storeroom'}
-        lead={lead}
-        rest={`${parts.length} ${'tracked items'}`}
+        lead={boardUnavailable ? 'Unavailable' : boardReady ? lead : 'Loading…'}
+        rest={boardUnavailable ? 'Equipment unavailable' : boardReady ? `${parts.length} ${'tracked items'}` : 'Loading…'}
         actions={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {'Add item'}</Btn>}
       />
 
-      {gate.status === 'error' ? (
-        <BoardLoadError es={es} onRetry={gate.retry} />
+      {loadError || gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={() => { setLoadError(false); gate.retry(); }} />
       ) : gate.status === 'loading' ? (
         <BoardLoading es={es} />
       ) : parts.length === 0 ? (

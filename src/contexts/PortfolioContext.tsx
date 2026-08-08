@@ -42,6 +42,7 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
   const portfolioQuery = searchParams.get('scope') === 'portfolio';
   const hotelDrilldown = searchParams.get('scope') === 'hotel';
   const entryRoute = (pathname === '/home' || pathname === '/property-selector') && !hotelDrilldown;
+  const defaultEntryRoute = pathname === '/' && !hotelDrilldown;
   const adminPortfolioContext = user?.role === 'admin' && (portfolioRoute || portfolioQuery);
   const enabled = shouldLoadPortfolioBootstrap({
     signedIn: Boolean(user),
@@ -52,6 +53,13 @@ export function PortfolioProvider({ children }: { children: React.ReactNode }) {
     propertyStandings,
     explicitPortfolioContext: portfolioRoute || portfolioQuery,
     entryRoute,
+    defaultEntryRoute,
+    // The switcher offers the company row everywhere, so the bootstrap has to be
+    // available everywhere a company person can open the menu. The provider is
+    // mounted at the root and its endpoint identity does not change with the
+    // path, so this widens WHERE the answer is available, not how often it is
+    // asked for.
+    companyModeRoute: !hotelDrilldown,
   });
   const endpoint = requestedOrganizationId
     ? `/api/portfolio/v1/bootstrap?organizationId=${encodeURIComponent(requestedOrganizationId)}`

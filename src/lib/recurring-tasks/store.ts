@@ -17,11 +17,22 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import {
   assignmentBlockedReason,
+  departmentBlockedReason,
   isAssignable,
   type AssignableStaffRow,
 } from '@/lib/worklist/assignable';
 
-export const RECURRING_DEPARTMENTS = ['front_desk', 'housekeeping', 'maintenance', 'general', 'all_staff'] as const;
+/**
+ * The departments a recurring to-do may be routed to.
+ *
+ * HOUSEKEEPING IS NOT HERE, and was the worst place in the product for it to
+ * be: a department row reaches only viewers in that department, housekeepers
+ * never open the to-do list, and this is the one door that spawns a fresh row
+ * EVERY day it is due. One accepted template, an invisible task a day, forever.
+ * Same rule as the composer's Who list and as `create_todo`; see
+ * worklist/assignable.ts, which owns the reason and the sentence.
+ */
+export const RECURRING_DEPARTMENTS = ['front_desk', 'maintenance', 'general', 'all_staff'] as const;
 /**
  * Every gap a template may repeat on.
  *
@@ -179,6 +190,12 @@ export function normalizeCadence(
 export async function createTemplate(input: CreateTemplateInput): Promise<{ id: string }> {
   const blocked = await assignmentBlockedReason(input.propertyId, input.assignedStaffId);
   if (blocked) throw new Error(blocked);
+  // The same guard one level up: naming the whole department was the hole the
+  // per-person check left open, and a standing rule is where it does the most
+  // damage. Enforced at the write seam so it holds for every caller, not only
+  // for the tool that happens to validate its own enum today.
+  const deptBlocked = departmentBlockedReason(input.assignedDepartment);
+  if (deptBlocked) throw new Error(deptBlocked);
   const cadence = input.cadence;
   const params = normalizeCadence(cadence, input, await propertyLocalDay(input.propertyId));
   const { data, error } = await supabaseAdmin

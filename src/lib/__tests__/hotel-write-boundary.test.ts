@@ -65,7 +65,7 @@ function configureStanding(options: {
   operationalRole: 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
   hotelMutationAllowed: boolean;
   source: 'legacy' | 'company' | 'property';
-  staxisRole?: 'owner' | 'vp' | 'finance' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
+  staxisRole?: 'owner' | 'regional_manager' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
 }): void {
   const normalized = options.source !== 'legacy';
   authorityResponse = ok({
@@ -80,7 +80,7 @@ function configureStanding(options: {
     propertyStandings: [{
       propertyId: options.propertyId,
       operationalRole: options.operationalRole,
-      seesFinancials: options.staxisRole === 'finance'
+      seesFinancials: options.staxisRole === 'regional_manager'
         || options.operationalRole === 'general_manager',
       hotelMutationAllowed: options.hotelMutationAllowed,
       portfolioIntelligenceRead: options.source === 'company',
@@ -151,8 +151,11 @@ describe('strict hotel write decision', () => {
     );
   });
 
-  test('company owner, VP, and finance reach stays read-only at the hotel', async () => {
-    for (const [index, role] of [[13, 'owner'], [14, 'vp'], [15, 'finance']] as const) {
+  // 0464 collapsed the company vocabulary to owner + regional_manager, so these
+  // two ARE every company hat there is. The retired `finance` case is gone with
+  // the role itself.
+  test('every company hat stays read-only at the hotel', async () => {
+    for (const [index, role] of [[13, 'owner'], [14, 'regional_manager']] as const) {
       const pid = propertyId(index);
       configureStanding({
         propertyId: pid,
@@ -257,8 +260,9 @@ describe('hotel drill-down mutation route contract', () => {
       'src/app/api/housekeeping/inspections/upload-photo/route.ts',
       'src/app/api/inventory/photo-count/route.ts',
       'src/app/api/inventory/post-count-process/route.ts',
-      'src/app/api/walkthrough/start/route.ts',
-      'src/app/api/walkthrough/step/route.ts',
+      // The two walkthrough routes were here until 2026-08-07 and went with the
+      // cursor demo. Nothing took their place: the companion tour that replaced
+      // that surface adds no API route, because it never acts on the hotel.
     ]) {
       assert.match(source(route), /hotelWriteDecisionForUserId/, route);
     }

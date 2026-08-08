@@ -629,6 +629,12 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   // The numbers it phrases are produced by code and re-checked mechanically
   // afterwards, which is what makes a small model safe here: a smarter one
   // would not be allowed to author anything this one cannot.
+  'companion.reply_question': defineFeature(
+    'companion.reply_question', 'Agent', 'The question on a Staxis card',
+    'Writes the one question at the bottom of a card Staxis found, so it asks about the actual problem instead of asking the same words on every card. It runs overnight with the rest of the sorting, never while anybody is waiting. It cannot change what the card says, cannot add or rename any of the buttons under it, and cannot write a number. If it breaks any of those rules the plain wording is used instead and nobody sees a difference.',
+    ['text'], HAIKU,
+  ),
+
   'findings.judge': defineFeature(
     'findings.judge', 'Agent', 'Nightly findings sorter',
     'Puts the problems Staxis noticed overnight in the order a manager should read them and writes each one in plain English and Spanish. It never decides what is wrong, only how to say it and what to show first.',
@@ -653,11 +659,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'findings.brief', 'Agent', 'Morning brief wording',
     'Rewrites the morning summary at the top of the Staxis tab so it reads like a person wrote it. The brief is written in English only. It cannot change any number or add anything to the summary. If it tries, the plain version is used instead.',
     ['text'], HAIKU,
-  ),
-  'walkthrough.step_generation': defineFeature(
-    'walkthrough.step_generation', 'Guidance', 'Guided walkthroughs',
-    'Powers the step-by-step guided tours that walk someone through using the app.',
-    ['text', 'tool_use'], SONNET,
   ),
   // The second reading of a to-do somebody typed. Plain code already reads
   // "check the boiler room every Friday" and everything like it, and that code

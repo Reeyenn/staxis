@@ -2,6 +2,10 @@
 // and a note. Complements the board's drag/resize for precision and for
 // touch devices; also the only place to put a note on a shift
 // ("deep clean floor 3").
+//
+// Same modal serves open (unstaffed) slots via variant='open': identical
+// time + note editing, a dashed identity badge instead of a person, and
+// "Retract" instead of "Remove".
 
 'use client';
 
@@ -17,12 +21,14 @@ import dialogStyles from '../StaffDialog.module.css';
 const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
 
 export function ShiftEditorModal({
-  shift, staffName, dayLabel, lang, onSave, onRemove, onClose,
+  shift, staffName, dayLabel, lang, variant = 'assigned', onSave, onRemove, onClose,
 }: {
   shift: BoardShift;
   staffName: string;
   dayLabel: string;
   lang: 'en' | 'es';
+  /** 'open' = an unfilled slot: no person, and removing it retracts it. */
+  variant?: 'assigned' | 'open';
   onSave: (patch: { startMin: number; endMin: number; note: string | null }) => void;
   onRemove: () => void;
   onClose: () => void;
@@ -85,7 +91,16 @@ export function ShiftEditorModal({
       }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-            <Avatar staffId={shift.staffId} name={staffName} size={32}/>
+            {variant === 'open' ? (
+              <span aria-hidden="true" style={{
+                width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
+                border: `1px dashed ${T.caramelDeep}`, color: T.caramelDeep,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                fontFamily: fonts.sans, fontSize: 15, fontWeight: 700,
+              }}>?</span>
+            ) : (
+              <Avatar staffId={shift.staffId} name={staffName} size={32}/>
+            )}
             <div style={{ minWidth: 0 }}>
               <h2 id={titleId} style={{
                 margin: 0, fontFamily: fonts.sans, fontSize: 20,
@@ -170,7 +185,7 @@ export function ShiftEditorModal({
           <Btn
             variant="ghost" size="md" onClick={onRemove}
             style={{ color: T.red, borderColor: 'rgba(184,92,61,0.25)' }}
-          >{'Remove'}</Btn>
+          >{variant === 'open' ? 'Retract' : 'Remove'}</Btn>
           <span style={{ flex: 1 }}/>
           <Btn variant="ghost" size="md" onClick={onClose}>{'Cancel'}</Btn>
           <Btn variant="primary" size="md" onClick={save}>{'Save'}</Btn>

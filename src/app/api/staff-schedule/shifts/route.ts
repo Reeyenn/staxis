@@ -4,7 +4,10 @@
 //                                    startTime, endTime, kind?, presetId?,
 //                                    note?, reason? } }
 //     Upsert a single cell. If `id` is set, update; otherwise insert. New
-//     rows default to status='draft' (until Publish). Open shifts pass
+//     rows are inserted at status='published' — the unified schedule tab has
+//     no separate Publish step, so what a manager places IS what staff see
+//     (same rule as /api/staff-schedule/fill). Updates leave status alone so
+//     a mid-SMS-cycle 'sent'/'confirmed' survives an edit. Open shifts pass
 //     kind='open' + staffId=null. The DB exclusion constraint enforces
 //     "one assigned shift per (staff, date)" automatically.
 //
@@ -190,8 +193,10 @@ export async function POST(req: NextRequest) {
     // INSERT with conflict handling on the exclusion constraint. If
     // there's already an assigned shift for this (staff, date) we update
     // instead, to keep the "click to overwrite" UX intuitive.
+    // status only on INSERT: an open shift nobody can see is not coverage,
+    // and the column default is still the pre-redesign 'draft'.
     const { data, error } = await supabaseAdmin
-      .from('scheduled_shifts').insert(row).select('*').single();
+      .from('scheduled_shifts').insert({ ...row, status: 'published' }).select('*').single();
     if (error) {
       // Exclusion-constraint conflict → 23P01; retry as an update of the
       // existing row to make the API call idempotent for the manager.

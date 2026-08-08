@@ -38,6 +38,10 @@ import {
   splitByCap,
   type QueueFinding,
   type QueueRun,
+  MENU_EDGE_MARGIN,
+  MENU_GAP,
+  menuPlacementIsOnScreen,
+  placeCardMenu,
 } from '@/components/concourse/finding-cards';
 
 const NOW = new Date('2026-07-25T15:00:00.000Z');
@@ -664,5 +668,107 @@ describe('a quiet watcher and a dead one must not look the same', () => {
     // ago" it would re-import a four-day-old fact as a current one.
     assert.ok(skippedNote(run(3, { detectorsSkipped: 2 }), 'en', NOW));
     assert.equal(skippedNote(run(96, { detectorsSkipped: 2 }), 'en', NOW), null);
+  });
+});
+
+// ─── The card's overflow menu ───────────────────────────────────────────────
+//
+// The founder's bug: the `···` menu opened downward out of the last row of a
+// card whose own rule is `overflow:hidden`, so it was clipped to a sliver under
+// the following card and none of the verdicts behind it could be reached.
+//
+// The component fix is a portal, which no unit test can prove. What CAN be
+// proved without a browser is the other half: that the coordinates this
+// function hands the portal always keep the whole menu on the screen. Every
+// case below is a shape of screen the old code got wrong.
+
+describe('placeCardMenu', () => {
+  const PHONE = { width: 390, height: 844 };
+  const DESKTOP = { width: 1440, height: 900 };
+  const MENU = { width: 206, height: 132 };
+
+  /** A `···` button 36px square, right-aligned inside a card. */
+  function moreButton(top: number, right = 1000): { top: number; left: number; right: number; bottom: number } {
+    return { top, bottom: top + 36, right, left: right - 36 };
+  }
+
+  test('a card with room below opens below, at the gap', () => {
+    const placed = placeCardMenu({ anchor: moreButton(200), menu: MENU, viewport: DESKTOP });
+    assert.equal(placed.side, 'below');
+    assert.equal(placed.top, 236 + MENU_GAP);
+    assert.ok(menuPlacementIsOnScreen(placed, DESKTOP));
+  });
+
+  test('a card at the BOTTOM of the screen opens upward instead of into nothing', () => {
+    // This is the founder's case. The old rule was unconditionally "below",
+    // which is why the menu had nowhere to be.
+    const placed = placeCardMenu({
+      anchor: moreButton(DESKTOP.height - 60), menu: MENU, viewport: DESKTOP,
+    });
+    assert.equal(placed.side, 'above');
+    assert.ok(menuPlacementIsOnScreen(placed, DESKTOP));
+    // And it finishes exactly at the gap above the button rather than floating.
+    assert.equal(placed.top + placed.maxHeight, DESKTOP.height - 60 - MENU_GAP);
+  });
+
+  test('a menu taller than the room it has scrolls rather than running off', () => {
+    const tall = { width: 206, height: 700 };
+    const placed = placeCardMenu({ anchor: moreButton(500), menu: tall, viewport: PHONE });
+    assert.ok(placed.maxHeight < tall.height);
+    assert.ok(menuPlacementIsOnScreen(placed, PHONE));
+  });
+
+  test('it never goes off the right edge, even anchored at the very edge', () => {
+    const placed = placeCardMenu({
+      anchor: moreButton(300, PHONE.width), menu: MENU, viewport: PHONE,
+    });
+    assert.ok(placed.left >= MENU_EDGE_MARGIN);
+    assert.ok(menuPlacementIsOnScreen(placed, PHONE));
+  });
+
+  test('it never goes off the left edge, even anchored near it', () => {
+    const placed = placeCardMenu({
+      anchor: moreButton(300, 40), menu: MENU, viewport: PHONE,
+    });
+    assert.equal(placed.left, MENU_EDGE_MARGIN);
+    assert.ok(menuPlacementIsOnScreen(placed, PHONE));
+  });
+
+  test('a menu wider than the phone is narrowed to the phone', () => {
+    const wide = { width: 600, height: 132 };
+    const placed = placeCardMenu({ anchor: moreButton(300, 380), menu: wide, viewport: PHONE });
+    assert.equal(placed.maxWidth, PHONE.width - MENU_EDGE_MARGIN * 2);
+    assert.ok(menuPlacementIsOnScreen(placed, PHONE));
+  });
+
+  test('there is no screen where it lands off the viewport', () => {
+    // The property, swept. The old behaviour fails this at every anchor in the
+    // bottom third of every viewport.
+    for (const viewport of [PHONE, DESKTOP, { width: 320, height: 480 }, { width: 768, height: 400 }]) {
+      for (let top = 0; top < viewport.height; top += 17) {
+        for (const right of [30, viewport.width / 2, viewport.width, viewport.width + 40]) {
+          const placed = placeCardMenu({
+            anchor: moreButton(top, right),
+            menu: MENU,
+            viewport,
+          });
+          assert.ok(
+            menuPlacementIsOnScreen(placed, viewport),
+            `off screen at top=${top} right=${right} in ${viewport.width}x${viewport.height}: `
+            + JSON.stringify(placed),
+          );
+        }
+      }
+    }
+  });
+
+  test('a viewport too small for anything still returns a position, never a refusal', () => {
+    // A control that opens into nothing is the bug this replaced, so there is
+    // deliberately no "it does not fit" branch to fall into.
+    const placed = placeCardMenu({
+      anchor: moreButton(10, 40), menu: MENU, viewport: { width: 100, height: 60 },
+    });
+    assert.ok(Number.isFinite(placed.left) && Number.isFinite(placed.top));
+    assert.ok(placed.maxHeight >= 0 && placed.maxWidth >= 0);
   });
 });

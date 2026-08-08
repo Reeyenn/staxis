@@ -41,7 +41,11 @@ export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Card };
 export {
   fmtDate, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
   daysBetween, addDaysLocal, relDue, displayLoc, cadenceLabel,
+  workOrderEnding, workOrderHistoryCount, newScheduleStart, newScheduleStartNote,
+  nextDueDate, daysUntilDue, bandFor, dueChipLabel, nextDueLine,
+  writeFailureMessage,
 } from './mt-dates';
+export type { Band } from './mt-dates';
 export type Priority = 'urgent' | 'normal' | 'low';
 
 // ── Concourse motion + card tokens (mirror concourse-css.tsx) ──────────────
@@ -108,6 +112,7 @@ export function Btn({
   }[variant];
   return (
     <button
+      className="stx-snow-button"
       onClick={onClick}
       disabled={disabled}
       type={type ?? 'button'}

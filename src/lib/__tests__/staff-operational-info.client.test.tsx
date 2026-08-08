@@ -11,6 +11,7 @@ import type { StaffMember } from '@/types';
 import { dayInfo, type BoardShift } from '@/lib/schedule-board';
 import { DayBoard } from '@/app/staff/_components/schedule/DayBoard';
 import { WeekRoster } from '@/app/staff/_components/schedule/WeekRoster';
+import type { OpenShift } from '@/app/staff/_components/schedule/useScheduleData';
 
 const DOM_GLOBALS = [
   'window',
@@ -208,11 +209,13 @@ describe('staff operational information component rendering', { concurrency: fal
         nameOf={() => 'Ava Chen'}
         otTitles={new Map()}
         readOnlyStaffIds={new Set()}
+        openShifts={[]}
         onUpdate={() => {}}
         onGestureStart={() => {}}
         onGestureEnd={() => {}}
         onRemove={() => {}}
         onTapShift={() => {}}
+        onTapOpenShift={() => {}}
       />
     ));
 
@@ -257,11 +260,13 @@ describe('staff operational information component rendering', { concurrency: fal
         lang="en"
         nameOf={() => 'Night Auditor'}
         otTitles={new Map()}
+        openShifts={[]}
         onUpdate={() => {}}
         onGestureStart={() => {}}
         onGestureEnd={() => {}}
         onRemove={() => {}}
         onTapShift={() => {}}
+        onTapOpenShift={() => {}}
       />
     ));
 
@@ -273,6 +278,99 @@ describe('staff operational information component rendering', { concurrency: fal
       await flushMicrotasks();
     });
     assert.equal(exactText(container, 'Scheduled now'), undefined, 'the overnight row belongs to its start date');
+  });
+
+  test('DayBoard shows an open shift as an unstaffed slot that opens the editor', async (context) => {
+    const browser = installBrowser();
+    const { container, root } = mount(context, browser);
+    const tapped: string[] = [];
+    const openSlot: OpenShift = {
+      id: 'open-1',
+      date: '2026-08-04',
+      dept: 'housekeeping',
+      startMin: 10 * 60,
+      endMin: 18 * 60,
+      note: null,
+      reason: 'Coverage reopened when a staff profile was archived',
+      visibleToStaff: true,
+    };
+
+    await render(root, (
+      <DayBoard
+        shifts={[]}
+        openShifts={[openSlot]}
+        presets={[]}
+        isToday={false}
+        timezone="America/Chicago"
+        lang="en"
+        nameOf={() => 'Nobody'}
+        otTitles={new Map()}
+        onUpdate={() => {}}
+        onGestureStart={() => {}}
+        onGestureEnd={() => {}}
+        onRemove={() => {}}
+        onTapShift={() => {}}
+        onTapOpenShift={(id) => { tapped.push(id); }}
+      />
+    ));
+
+    const text = container.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    assert.match(text, /Open shift/, 'the uncovered slot is named on the board');
+    assert.match(text, /1 OPEN/, 'the department lane counts its uncovered slots');
+
+    const hkLane = container.querySelector<HTMLElement>('[data-lane="housekeeping"]');
+    assert.ok(hkLane, 'the slot lands in its own department lane');
+    assert.doesNotMatch(
+      hkLane.textContent ?? '',
+      /No one on .* yet\. Use ＋ Add staff above\./,
+      'a lane holding an open slot is not also reported as untouched',
+    );
+    const fdLane = container.querySelector<HTMLElement>('[data-lane="front_desk"]');
+    assert.match(
+      fdLane?.textContent ?? '',
+      /No one on .* yet\. Use ＋ Add staff above\./,
+      'a genuinely empty lane keeps its existing prompt',
+    );
+
+    const chip = Array.from(container.querySelectorAll('button'))
+      .find(button => (button.textContent ?? '').includes('Open shift'));
+    assert.ok(chip, 'the open slot is a real button, not a decorated div');
+    assert.match(
+      chip.style.border,
+      /dashed/,
+      'an uncovered slot must not read as a filled shift at a glance',
+    );
+
+    await act(async () => {
+      chip.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await flushMicrotasks();
+    });
+    assert.deepEqual(tapped, ['open-1'], 'tapping an open slot opens its editor');
+  });
+
+  test('WeekRoster marks the days that still have uncovered slots', async (context) => {
+    const browser = installBrowser();
+    const { container, root } = mount(context, browser);
+    const person = staff('ava', 'Ava Chen');
+
+    await render(root, (
+      <WeekRoster
+        days={WEEK_DAYS}
+        getDay={() => []}
+        staff={[person]}
+        lang="en"
+        reducedMotion
+        openCountByDate={{ '2026-08-04': 2 }}
+      />
+    ));
+
+    const text = container.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    assert.match(text, /2 OPEN/, 'the day column carries the uncovered count');
+    assert.equal(
+      (text.match(/OPEN/g) ?? []).length,
+      1,
+      'only the day that actually has uncovered slots is marked',
+    );
   });
 
   test('preserves the approved wording boundary and existing print labels', () => {
