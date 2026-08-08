@@ -82,6 +82,8 @@ const ITEM_NAME = ROBOT_WALK_ITEM_NAME;
 
 /** Per-action patience. The live site is a real deploy on a cold serverless. */
 const ACTION_MS = 20_000;
+/** Interactive writes can spend up to 30s refreshing auth before retrying. */
+const WRITE_RESPONSE_MS = 35_000;
 /** The one model call gets its own, longer, budget. */
 const MODEL_MS = 90_000;
 
@@ -192,7 +194,7 @@ async function createTaskFromComposer(page: Page, title: string): Promise<string
   await composerInput(page).fill(title);
   const responsePromise = page.waitForResponse(
     (response) => isMatchingPost(response, '/api/comms/tasks', (body) => body.title === title),
-    { timeout: ACTION_MS },
+    { timeout: WRITE_RESPONSE_MS },
   );
   const [response] = await Promise.all([responsePromise, page.keyboard.press('Enter')]);
   const envelope = await readSuccessfulEnvelope(response, `creating "${title}"`);
@@ -220,7 +222,7 @@ async function completeTaskRow(page: Page, taskId: string): Promise<void> {
     (response) => isMatchingPost(response, '/api/worklist/complete', (body) => (
       body.sourceId === taskId && body.outcome === 'done'
     )),
-    { timeout: ACTION_MS },
+    { timeout: WRITE_RESPONSE_MS },
   );
   const [response] = await Promise.all([responsePromise, done.click({ timeout: ACTION_MS })]);
   const envelope = await readSuccessfulEnvelope(response, `completing task ${taskId}`);
