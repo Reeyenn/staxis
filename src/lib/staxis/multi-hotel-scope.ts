@@ -14,6 +14,7 @@ import {
   type ManagementCompanyScopeResult,
 } from '@/lib/company/authoritative-scope';
 import { commsStaffIdentityId } from '@/lib/comms/identity';
+import { normalizeDept } from '@/lib/capabilities/dept-scope';
 import { validPropertyTimezone } from '@/lib/property-timezone';
 import type { MultiHotelLabel } from './multi-hotel-types';
 
@@ -38,6 +39,8 @@ export interface MultiHotelScopeHotel extends MultiHotelLabel {
 
 export interface MultiHotelScope {
   accountId: string;
+  /** The verified auth subject used for exact local staff identity re-checks. */
+  authUserId: string;
   organizationId: string | null;
   hotels: MultiHotelScopeHotel[];
   authorizedPropertyIds: string[];
@@ -81,6 +84,22 @@ export type ExistingStaffDecision =
   | { kind: 'identity'; staffId: string; department: string | null }
   | { kind: 'ambiguous' }
   | { kind: 'absent' };
+
+export interface StaffIdentitySnapshot {
+  staffId: string | null;
+  department: string | null;
+  identityAmbiguous: boolean;
+}
+
+/** Compare the exact local identity facts used by aggregate reads. */
+export function staffIdentitySnapshotMatches(
+  original: StaffIdentitySnapshot,
+  current: StaffIdentitySnapshot,
+): boolean {
+  return original.staffId === current.staffId
+    && normalizeDept(original.department) === normalizeDept(current.department)
+    && original.identityAmbiguous === current.identityAmbiguous;
+}
 
 /**
  * Select only an exact existing local identity. This is pure so the aggregate
@@ -268,6 +287,7 @@ export async function resolveMultiHotelScope(input: {
     ok: true,
     scope: {
       accountId: input.accountId,
+      authUserId: input.authUserId,
       organizationId,
       hotels,
       authorizedPropertyIds: propertyIds,
@@ -375,6 +395,29 @@ export async function resolveExistingStaffByProperty(input: {
 export async function multiHotelScopeStillCurrent(scope: MultiHotelScope): Promise<
   { ok: true } | { ok: false; reason: 'unavailable' | 'scope_changed' }
 > {
+  const assertStaffIdentityCurrent = async (): Promise<
+    { ok: true } | { ok: false; reason: 'unavailable' | 'scope_changed' }
+  > => {
+    const currentStaff = await resolveExistingStaffByProperty({
+      accountId: scope.accountId,
+      authUserId: scope.authUserId,
+      propertyIds: scope.authorizedPropertyIds,
+    });
+    if (!currentStaff) return { ok: false, reason: 'unavailable' };
+    for (const hotel of scope.hotels) {
+      const identity = currentStaff.identities.get(hotel.propertyId);
+      const current: StaffIdentitySnapshot = {
+        staffId: identity?.staffId ?? null,
+        department: identity?.department ?? null,
+        identityAmbiguous: currentStaff.ambiguousPropertyIds.has(hotel.propertyId),
+      };
+      if (!staffIdentitySnapshotMatches(hotel, current)) {
+        return { ok: false, reason: 'scope_changed' };
+      }
+    }
+    return { ok: true };
+  };
+
   if (scope.authorizationReceipt) {
     const asserted = await assertAuthorizationScopeReceipt({
       receiptId: scope.authorizationReceipt.id,
@@ -387,7 +430,7 @@ export async function multiHotelScopeStillCurrent(scope: MultiHotelScope): Promi
     if (!authorizationReceiptMatches(scope, receipt)) {
       return { ok: false, reason: 'scope_changed' };
     }
-    return { ok: true };
+    return assertStaffIdentityCurrent();
   }
 
   const current = await listAuthoritativePropertyAccess(scope.accountId);
@@ -413,7 +456,7 @@ export async function multiHotelScopeStillCurrent(scope: MultiHotelScope): Promi
       return { ok: false, reason: 'scope_changed' };
     }
   }
-  return { ok: true };
+  return assertStaffIdentityCurrent();
 }
 
 /** Exact receipt comparison used immediately before aggregate egress. */

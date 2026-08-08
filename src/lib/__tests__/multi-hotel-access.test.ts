@@ -13,6 +13,7 @@ import {
 import {
   authorizationReceiptMatches,
   chooseExistingStaffIdentity,
+  staffIdentitySnapshotMatches,
 } from '@/lib/staxis/multi-hotel-scope';
 import {
   canClaimMultiHotelEmpty,
@@ -68,6 +69,7 @@ describe('multi-hotel Staxis access contract', () => {
     const bravo = hotel(PROPERTY_B, 'Bravo');
     const scope = {
       accountId: ACCOUNT,
+      authUserId: AUTH_USER,
       organizationId: null,
       hotels: [alpha, bravo],
       authorizedPropertyIds: [PROPERTY_A, PROPERTY_B],
@@ -114,6 +116,7 @@ describe('multi-hotel Staxis access contract', () => {
     const unresolved = hotel(PROPERTY_A, 'Alpha');
     const unresolvedScope = {
       accountId: ACCOUNT,
+      authUserId: AUTH_USER,
       organizationId: null,
       hotels: [unresolved],
       authorizedPropertyIds: [PROPERTY_A],
@@ -235,6 +238,7 @@ describe('multi-hotel Staxis access contract', () => {
     const alpha = hotel(PROPERTY_A, 'Alpha');
     const scope = {
       accountId: ACCOUNT,
+      authUserId: AUTH_USER,
       organizationId: null,
       hotels: [alpha],
       authorizedPropertyIds: [PROPERTY_A],
@@ -273,6 +277,7 @@ describe('multi-hotel Staxis access contract', () => {
     const alpha = hotel(PROPERTY_A, 'Alpha');
     const scope = {
       accountId: ACCOUNT,
+      authUserId: AUTH_USER,
       organizationId: null,
       hotels: [alpha],
       authorizedPropertyIds: [PROPERTY_A],
@@ -317,6 +322,7 @@ describe('multi-hotel Staxis access contract', () => {
     }));
     const scope = {
       accountId: ACCOUNT,
+      authUserId: AUTH_USER,
       organizationId: null,
       hotels,
       authorizedPropertyIds: hotels.map((entry) => entry.propertyId),
@@ -374,12 +380,22 @@ describe('multi-hotel Staxis access contract', () => {
     assert.equal(authorizationReceiptMatches(scope, { ...receipt, propertyIds: [PROPERTY_A] }), false);
   });
 
+  test('staff identity reassertion detects department, link, and ambiguity changes', () => {
+    const unchanged = { staffId: 'staff-a', department: 'FRONT_DESK', identityAmbiguous: false };
+    assert.equal(staffIdentitySnapshotMatches(unchanged, { ...unchanged, department: 'front_desk' }), true);
+    assert.equal(staffIdentitySnapshotMatches(unchanged, { ...unchanged, department: 'housekeeping' }), false);
+    assert.equal(staffIdentitySnapshotMatches(unchanged, { ...unchanged, staffId: 'staff-b' }), false);
+    assert.equal(staffIdentitySnapshotMatches(unchanged, { ...unchanged, identityAmbiguous: true }), false);
+  });
+
   test('resolves existing property-local identities without display-name matching or writes', () => {
     const scope = source('src', 'lib', 'staxis', 'multi-hotel-scope.ts');
     assert.match(scope, /account_property_staff_links/);
     assert.match(scope, /auth_user_id/);
     assert.match(scope, /commsStaffIdentityId\(propertyId, input\.accountId\)/);
     assert.match(scope, /identityAmbiguous/);
+    assert.match(scope, /staffIdentitySnapshotMatches/);
+    assert.match(scope, /resolveExistingStaffByProperty\(\{/);
     assert.match(scope, /is_active\.eq\.true,is_active\.is\.null/);
     assert.doesNotMatch(scope, /display_name/);
     assert.doesNotMatch(scope, /\.insert\(/);
@@ -430,6 +446,7 @@ describe('multi-hotel Staxis access contract', () => {
     assert.match(panel, /aria-expanded=\{repliesOpen\}/);
     assert.match(panel, /aria-controls=\{repliesId\}/);
     assert.match(panel, /id=\{repliesId\}/);
+    assert.match(panel, /hidden=\{!repliesOpen\}/);
     assert.match(panel, /mho-call/);
     assert.match(panel, /item\.telText/);
     assert.match(panel, /Showing the first 500 replies/);

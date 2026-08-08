@@ -247,17 +247,19 @@ function LogbookRows({
               {entry.title}
             </button>
             {entry.body && <div className="mho-row-body">{entry.body}</div>}
-            {repliesOpen && (
-              <div id={repliesId} className="mho-row-body" role="region" aria-label={`Replies for ${entry.title}`}>
-                {repliesLoading ? 'Loading replies…' : repliesError ? (repliesErrorMessage ?? 'Replies could not be read.') : replies.length === 0 ? 'No replies yet.' : replies.map((reply) => (
-                  <div key={reply.id} style={{ marginTop: 6 }}><strong>{reply.authorName ?? 'Staff'}:</strong> {reply.body}</div>
-                ))}
-                {!repliesLoading && !repliesError && !repliesComplete && (
-                  <div style={{ marginTop: 6 }}>Showing the first 500 replies.</div>
-                )}
-                <button type="button" className="mho-open" onClick={() => onSelect(null)}>Close detail</button>
-              </div>
-            )}
+            <div id={repliesId} className="mho-row-body" role="region" aria-label={`Replies for ${entry.title}`} hidden={!repliesOpen}>
+              {repliesOpen && (
+                <>
+                  {repliesLoading ? 'Loading replies…' : repliesError ? (repliesErrorMessage ?? 'Replies could not be read.') : replies.length === 0 ? 'No replies yet.' : replies.map((reply) => (
+                    <div key={reply.id} style={{ marginTop: 6 }}><strong>{reply.authorName ?? 'Staff'}:</strong> {reply.body}</div>
+                  ))}
+                  {!repliesLoading && !repliesError && !repliesComplete && (
+                    <div style={{ marginTop: 6 }}>Showing the first 500 replies.</div>
+                  )}
+                  <button type="button" className="mho-open" onClick={() => onSelect(null)}>Close detail</button>
+                </>
+              )}
+            </div>
           </li>
         );
       })}
