@@ -46,6 +46,38 @@ export const ROBOT_WALK_HEARTBEAT = 'robot-walk';
 export const ROBOT_WALK_MARKER = 'Robot check:';
 
 /**
+ * Exact sentences the browser types into the hotel's to-do composer.
+ *
+ * The composer reads cadence words such as "nightly". The old walkthrough
+ * sentence therefore created a daily recurring template (and returned a
+ * template id) instead of a one-off task row. Keep the robot's own sentences
+ * here, beside the contract that tests them through the real parser, so a
+ * future wording change cannot silently turn a create step back into a rule.
+ */
+export const ROBOT_WALK_TODO_TITLE = `${ROBOT_WALK_MARKER} walkthrough`;
+export const ROBOT_WALK_ASSIGNED_TODO_TITLE = `${ROBOT_WALK_MARKER} handover`;
+export const ROBOT_WALK_FACT_TEXT = `${ROBOT_WALK_MARKER} the supply closet is on floor 2.`;
+export const ROBOT_WALK_ITEM_NAME = `${ROBOT_WALK_MARKER} spare bulbs`;
+
+/** Every sentence the robot types into the parsed composer surface. */
+export const ROBOT_WALK_COMPOSER_STRINGS: readonly string[] = [
+  ROBOT_WALK_TODO_TITLE,
+  ROBOT_WALK_ASSIGNED_TODO_TITLE,
+];
+
+/**
+ * `fetchWithAuth` can expose an initial 401 before it refreshes the session
+ * and retries the same POST. The browser monitor must skip that intermediate
+ * response, while still observing every other status as the terminal result.
+ * A terminal 401 therefore times out rather than being mistaken for success.
+ */
+export const ROBOT_WALK_AUTH_RETRY_STATUS = 401;
+
+export function isRobotWalkAuthRetryStatus(status: number): boolean {
+  return status === ROBOT_WALK_AUTH_RETRY_STATUS;
+}
+
+/**
  * How stale the last run may get before the doctor says so. The walk is nightly
  * (24h), and 26 gives a two-hour grace for a slow runner or a queued job, so a
  * single late start is not an alert while a genuinely stopped robot is caught

@@ -23,6 +23,164 @@ prod state.
 6. Hooks/CI/process changes belong in code, not here. This log is for
    the irreversible-from-git ops.
 
+## 2026-08-08 — Stop legacy Robot Hotel recurring to-dos
+
+### Data cleanup
+
+The old browser-walk sentence `Robot check: nightly walkthrough` was parsed as
+a daily recurrence. It left six active templates at the Robot Hotel that could
+spawn rows outside the corrected one-shot walk. We deactivated exactly these
+six active templates (count 6), keeping the inactive `d7d61844-fd65-48df-9e3b-df6a1f77e91a`
+template untouched:
+
+```text
+302b5469-35d6-46a2-a3bd-8ae4c90967c1
+46f32de9-b5d2-430d-b239-18aa0afb8b5c
+5b54102f-46cf-4f28-b035-e39bc65ed101
+762e6636-a284-494b-8117-58d24e4031d4
+e20bac3f-7421-4879-b126-2f229957bfea
+f883c686-4c9f-42de-9327-5e31429c5c30
+```
+
+Every row matched property `d4e83b9d-a87b-473a-afa1-ed3975cb9863`, the exact
+title above, creator `74dafc84-fe29-453e-8c19-9142c4677adc`, and `active = true`.
+No task or history row was deleted.
+
+### Guarded command (password redacted)
+
+The read-only preflight returned `expected=6 | active=6 | matched=6 | unexpected=0 | missing=0`.
+The production change used one `ON_ERROR_STOP` transaction, locked and
+rechecked the matching active rows, aborted unless the six-row set matched,
+then updated only those IDs under all tenant/title/creator/active predicates:
+
+```text
+set -a; source ~/.config/staxis/tokens.env; set +a
+PGSSLMODE=require PGPASSWORD="$SUPABASE_DB_PASSWORD" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+  --host "$SUPABASE_DB_HOST" --port 5432 \
+  --username "postgres.$SUPABASE_PROJECT_REF" --dbname postgres <<'SQL'
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+CREATE TEMP TABLE robot_cleanup_expected (id uuid PRIMARY KEY) ON COMMIT DROP;
+INSERT INTO robot_cleanup_expected (id) VALUES
+  ('302b5469-35d6-46a2-a3bd-8ae4c90967c1'),
+  ('5b54102f-46cf-4f28-b035-e39bc65ed101'),
+  ('762e6636-a284-494b-8117-58d24e4031d4'),
+  ('46f32de9-b5d2-430d-b239-18aa0afb8b5c'),
+  ('f883c686-4c9f-42de-9327-5e31429c5c30'),
+  ('e20bac3f-7421-4879-b126-2f229957bfea');
+DO $$
+DECLARE
+  expected_count integer;
+  active_count integer;
+  matched_count integer;
+  updated_count integer;
+BEGIN
+  SELECT count(*) INTO expected_count FROM pg_temp.robot_cleanup_expected;
+  PERFORM r.id
+  FROM public.recurring_task_templates AS r
+  WHERE r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
+    AND r.title = 'Robot check: nightly walkthrough'
+    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
+    AND r.active = true
+  FOR UPDATE;
+  SELECT count(*) INTO active_count
+  FROM public.recurring_task_templates AS r
+  WHERE r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
+    AND r.title = 'Robot check: nightly walkthrough'
+    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
+    AND r.active = true;
+  SELECT count(*) INTO matched_count
+  FROM public.recurring_task_templates AS r
+  JOIN pg_temp.robot_cleanup_expected AS e ON e.id = r.id
+  WHERE r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
+    AND r.title = 'Robot check: nightly walkthrough'
+    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
+    AND r.active = true;
+  IF expected_count <> 6 OR active_count <> expected_count OR matched_count <> expected_count THEN
+    RAISE EXCEPTION 'robot template guard mismatch: expected %, active %, matched %', expected_count, active_count, matched_count;
+  END IF;
+  UPDATE public.recurring_task_templates AS r
+  SET active = false, updated_at = now()
+  FROM pg_temp.robot_cleanup_expected AS e
+  WHERE r.id = e.id
+    AND r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
+    AND r.title = 'Robot check: nightly walkthrough'
+    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
+    AND r.active = true;
+  GET DIAGNOSTICS updated_count = ROW_COUNT;
+  IF updated_count <> expected_count THEN
+    RAISE EXCEPTION 'robot template update count mismatch: expected %, updated %', expected_count, updated_count;
+  END IF;
+  RAISE NOTICE 'robot template cleanup guard passed; deactivated % exact rows', updated_count;
+END $$;
+COMMIT;
+SQL
+```
+
+### Verification and rollback
+
+Post-transaction verification found all six expected rows inactive, zero active
+rows for the exact property/title/creator predicate, and zero open
+`comms_tasks` spawned from these templates. Existing task instances and their
+completion history remain available for audit.
+
+To reverse this one-time cleanup, run the same redacted `psql` setup and a
+guarded transaction that locks/requires the same six IDs with the same
+property/title/creator predicates and `active = false`, then sets only those
+rows back to `active = true` (abort unless exactly six rows are updated):
+
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+CREATE TEMP TABLE robot_cleanup_rollback_expected (id uuid PRIMARY KEY) ON COMMIT DROP;
+INSERT INTO robot_cleanup_rollback_expected (id) VALUES
+  ('302b5469-35d6-46a2-a3bd-8ae4c90967c1'),
+  ('46f32de9-b5d2-430d-b239-18aa0afb8b5c'),
+  ('5b54102f-46cf-4f28-b035-e39bc65ed101'),
+  ('762e6636-a284-494b-8117-58d24e4031d4'),
+  ('e20bac3f-7421-4879-b126-2f229957bfea'),
+  ('f883c686-4c9f-42de-9327-5e31429c5c30');
+DO $$
+DECLARE
+  expected_count integer;
+  matched_count integer;
+  restored_count integer;
+BEGIN
+  SELECT count(*) INTO expected_count FROM pg_temp.robot_cleanup_rollback_expected;
+  PERFORM r.id
+  FROM public.recurring_task_templates AS r
+  JOIN pg_temp.robot_cleanup_rollback_expected AS e ON e.id = r.id
+  WHERE r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
+    AND r.title = 'Robot check: nightly walkthrough'
+    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
+    AND r.active = false
+  FOR UPDATE;
+  SELECT count(*) INTO matched_count
+  FROM public.recurring_task_templates AS r
+  JOIN pg_temp.robot_cleanup_rollback_expected AS e ON e.id = r.id
+  WHERE r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
+    AND r.title = 'Robot check: nightly walkthrough'
+    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
+    AND r.active = false;
+  IF expected_count <> 6 OR matched_count <> expected_count THEN
+    RAISE EXCEPTION 'robot template rollback guard mismatch: expected %, matched %', expected_count, matched_count;
+  END IF;
+  UPDATE public.recurring_task_templates AS r
+  SET active = true, updated_at = now()
+  FROM pg_temp.robot_cleanup_rollback_expected AS e
+  WHERE r.id = e.id
+    AND r.property_id = 'd4e83b9d-a87b-473a-afa1-ed3975cb9863'
+    AND r.title = 'Robot check: nightly walkthrough'
+    AND r.created_by_staff_id = '74dafc84-fe29-453e-8c19-9142c4677adc'
+    AND r.active = false;
+  GET DIAGNOSTICS restored_count = ROW_COUNT;
+  IF restored_count <> 6 THEN
+    RAISE EXCEPTION 'robot template rollback count mismatch: restored %', restored_count;
+  END IF;
+END $$;
+COMMIT;
+```
+
 ## Access Stage A release contract (pending approval)
 
 Migrations `0418` through `0423` are intentionally not applied by this branch.
