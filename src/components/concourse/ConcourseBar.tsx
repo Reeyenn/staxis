@@ -388,6 +388,22 @@ export function ConcourseBar() {
   // pills entirely; Financials additionally needs the view_financials
   // capability (server routes enforce the same gate independently).
   const portfolioRouteFor = (key: AppSection): string => {
+    // Messages is a personal inbox even when the app is wearing a company
+    // scope. Keep the exact company selector in the URL so CommsApp can load
+    // the caller's independently-authorized hotel inboxes; never send this
+    // item to the retired portfolio Communications module.
+    if (key === 'communications') {
+      if (portfolioHotelContext && acting?.request.kind === 'hotel') {
+        return mapPortfolioUiRoute('communications', acting.request.context, {
+          existing: searchParams,
+          returnTo: acting.request.returnTo,
+        });
+      }
+      const organizationId = companyOrganizationId ?? portfolioOrganizationId;
+      return organizationId
+        ? companyScopeHref('/communications', organizationId)
+        : '/communications';
+    }
     if (purePortfolioContext) {
       if (!portfolioOrganizationId) return '/home';
       return key === 'staxis'
@@ -418,6 +434,13 @@ export function ConcourseBar() {
       if (portfolioScoped) {
         if (m.key === 'staxis') return portfolioQueueAvailable;
         if (m.key === 'financials') return portfolioFinancialsAvailable;
+        // The company-wide Communications module is retired. Keep the nav
+        // slot only as the caller's personal Messages inbox, scoped above.
+        if (m.key === 'communications') {
+          return purePortfolioContext
+            ? Boolean(portfolioOrganizationId)
+            : portfolioHotelContext?.sectionAvailability[m.key] === true;
+        }
         return purePortfolioContext
           || portfolioHotelContext?.sectionAvailability[m.key] === true;
       }
@@ -439,7 +462,7 @@ export function ConcourseBar() {
     })
     .map((m) => {
       const href = portfolioRouteFor(m.key);
-      const portfolioPath = purePortfolioContext
+      const portfolioPath = purePortfolioContext && m.key !== 'communications'
         ? m.key === 'staxis' ? '/portfolio/staxis' : `/portfolio/${m.key}`
         : null;
       return {

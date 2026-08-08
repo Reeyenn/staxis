@@ -83,7 +83,14 @@ export function AppLayout({
      the whole company, which is the worst possible failure here: it is wrong
      and it looks right. Say so instead, and offer the hotel version. The
      company versions of these pages ship separately. */
-  const companySectionPending = activeScope.kind === 'company' && currentSection !== null;
+  // Messages is a personal inbox, including when the caller keeps an exact
+  // company scope in the URL so it can show independently-authorized hotel
+  // conversations. It is not a company operations module, so let the personal
+  // Communications route render instead of showing the company-section
+  // placeholder used by the other department pages.
+  const companySectionPending = activeScope.kind === 'company'
+    && currentSection !== null
+    && currentSection !== 'communications';
   const companySectionLabel = currentSection ? SECTION_META[currentSection].label_en : '';
 
   /* ── Offline banner ──

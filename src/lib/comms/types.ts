@@ -24,6 +24,10 @@ export const CHANNEL_LABELS: Record<ChannelKey, string> = {
 /** A conversation as returned to the client. */
 export interface ConversationDTO {
   id: string;
+  /** Present when the client composes authorized hotel-scoped responses. */
+  propertyId?: string;
+  /** Server-authorized hotel label used only to disambiguate multi-hotel views. */
+  propertyName?: string;
   kind: ConversationKind;
   channelKey: ChannelKey | 'announcements' | null;
   title: string;            // resolved display title (other person / channel name / "Announcements")

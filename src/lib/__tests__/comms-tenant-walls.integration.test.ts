@@ -423,6 +423,21 @@ describe('authenticated channel walls', () => {
       true,
       `the front-desk channel remains available to its department: ${JSON.stringify(listed)}`,
     );
+    const frontDeskListed = listed.find((conversation) => conversation.id === frontDeskConversation);
+    assert.notEqual(frontDeskListed?.lastMessagePreview, CROSS_PROPERTY_NEEDLE, 'sidebar preview ignores a foreign-property row');
+    const frontDeskMember = await one<{ last_read_at: string | null }>(
+      `select last_read_at from comms_members
+       where property_id = $1 and conversation_id = $2 and staff_id = $3`,
+      [PID_A1, frontDeskConversation, frontDeskStaff],
+    );
+    const expectedUnread = await one<{ n: number }>(
+      `select count(*)::int as n from comms_messages
+       where property_id = $1 and conversation_id = $2
+         and (sender_staff_id is null or sender_staff_id <> $3)
+         and ($4::timestamptz is null or created_at > $4::timestamptz)`,
+      [PID_A1, frontDeskConversation, frontDeskStaff, frontDeskMember?.last_read_at ?? null],
+    );
+    assert.equal(frontDeskListed?.unread, expectedUnread?.n ?? 0, 'sidebar unread count is property-scoped');
 
     const staleMembership = await one<{ id: string }>(
       `select id from comms_members

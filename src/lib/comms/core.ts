@@ -804,6 +804,7 @@ export async function listConversationsForStaff(
     const { data: lastMsgRows } = await supabaseAdmin
       .from('comms_messages')
       .select('body, msg_type, created_at, sender_staff_id')
+      .eq('property_id', pid)
       .eq('conversation_id', c.id)
       .order('created_at', { ascending: false })
       .limit(1);
@@ -815,6 +816,7 @@ export async function listConversationsForStaff(
       let q = supabaseAdmin
         .from('comms_messages')
         .select('id', { count: 'exact', head: true })
+        .eq('property_id', pid)
         .eq('conversation_id', c.id)
         // NULL-safe "not authored by me": PostgREST .neq drops NULL rows
         // (three-valued logic), so @Staxis/system messages (sender_staff_id
@@ -1893,6 +1895,7 @@ export async function getThreadReplies(
     .from('comms_messages')
     .select(MESSAGE_COLUMNS)
     .eq('property_id', pid)
+    .eq('conversation_id', conversationId)
     .eq('parent_message_id', parentId)
     .order('created_at', { ascending: true })
     .limit(200);
