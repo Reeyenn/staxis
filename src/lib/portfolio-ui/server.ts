@@ -2,8 +2,11 @@ import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
-import { resolveEffectiveRole } from '@/lib/company/access';
-import { isCompanyScopeRole } from '@/lib/company/roles';
+import {
+  accountHasCompanyHat,
+  isCompanyHat,
+  resolveEffectiveRole,
+} from '@/lib/company/access';
 import { canViewFinancials } from '@/lib/roles';
 import { normalizeWorkOrderSeverity } from '@/lib/db-mappers';
 import { stockStatus } from '@/lib/stock-status';
@@ -781,7 +784,7 @@ export function authorizedPortfolioUiContexts(
           propertyIds: Set<string>;
         }>();
         for (const hat of account.hats ?? []) {
-          if (hat.scope !== 'company' || !isCompanyScopeRole(hat.role)) continue;
+          if (!isCompanyHat(hat)) continue;
           const role = hat.role as PortfolioUiCompanyRole;
           const current = grouped.get(hat.organizationId);
           if (!current) {
@@ -1698,6 +1701,7 @@ export async function loadPortfolioUiBootstrap(
     data: {
       version: PORTFOLIO_UI_VERSION,
       generatedAt: now.toISOString(),
+      hasCompanyHat: accountHasCompanyHat(options.account.hats),
       contexts,
       entry: {
         mode: selectedCompany ? 'portfolio' : contexts.length > 0 ? 'company_picker' : 'hotel',

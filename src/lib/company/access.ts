@@ -36,6 +36,7 @@ import type { AppRole } from '@/lib/roles';
 import {
   hatSeesFinancials,
   isHatRole,
+  isCompanyScopeRole,
   isMembershipScope,
   operationalRoleForHatAtHotel,
   type HatRole,
@@ -57,6 +58,20 @@ export interface MembershipHat {
    * after the hat was created is already in here, with nothing re-stamped.
    */
   coveredPropertyIds: string[];
+}
+
+/** Exact company-hat predicate shared by every UI projection. */
+export function isCompanyHat(
+  hat: Pick<MembershipHat, 'scope' | 'role'>,
+): boolean {
+  return hat.scope === 'company' && isCompanyScopeRole(hat.role);
+}
+
+/** Whether an account's already-resolved hats include a company hat. */
+export function accountHasCompanyHat(
+  hats: readonly Pick<MembershipHat, 'scope' | 'role'>[] | null | undefined,
+): boolean {
+  return (hats ?? []).some((hat) => isCompanyHat(hat));
 }
 
 export type RoleSource = 'membership' | 'grant' | 'legacy' | 'none';

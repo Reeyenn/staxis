@@ -81,6 +81,12 @@ describe('portfolio bootstrap entry routing', () => {
     }), false);
   });
 
+  test('a zero-standing account is discovered only at a default entry door', () => {
+    assert.equal(homeDecision({ propertyStandings: [] }), true);
+    assert.equal(homeDecision({ propertyStandings: [], entryRoute: false }), false);
+    assert.equal(homeDecision({ propertyStandings: [], entryRoute: false, defaultEntryRoute: true }), true);
+  });
+
   test('a failed bootstrap stops only an eligible actor wait', () => {
     assert.equal(homeDecision({ propertyStandings: [PORTFOLIO_STANDING] }), true);
     assert.equal(shouldWaitForPortfolioEntry({

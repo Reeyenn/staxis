@@ -143,6 +143,9 @@ export interface PortfolioUiSelection {
 export interface PortfolioUiBootstrapV1 {
   version: typeof PORTFOLIO_UI_VERSION;
   generatedAt: string;
+  /** True only when the account holds an owner/regional-manager company hat,
+   * even if that hat currently covers no hotels. */
+  hasCompanyHat: boolean;
   contexts: PortfolioUiCompanyContext[];
   entry: PortfolioUiEntryDecisionInputs;
   selection: PortfolioUiSelection;

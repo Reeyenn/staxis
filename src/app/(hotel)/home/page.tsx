@@ -28,12 +28,36 @@ import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 import { shouldWaitForPortfolioEntry } from '@/lib/portfolio-ui/entry-routing';
-import { companyScopeHref, localAppHref, resolveHomeEntry } from '@/lib/portfolio-ui/acting-scope';
+import {
+  companyDefaultEntryDestination,
+  companyScopeHref,
+  localAppHref,
+  resolveHomeEntry,
+} from '@/lib/portfolio-ui/acting-scope';
 import { buildScopeSwitcherRows, type ScopeSwitcherRow } from '@/lib/portfolio-ui/scope-switcher';
 
 interface TileLine { en: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
 type ManagementHubContext = 'company' | 'hotel';
+
+function sessionHotelWasChosen(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.sessionStorage.getItem('hotelops-session-selected') === '1';
+  } catch {
+    // A blocked sessionStorage must fail toward the company picker.
+    return false;
+  }
+}
+
+function markSessionHotelChosen(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem('hotelops-session-selected', '1');
+  } catch {
+    // A blocked marker keeps the next default entry on the safe selector.
+  }
+}
 
 function greetingFor(lang: 'en' | 'es', name: string | undefined, hour: number): string {
   const who = name ? `, ${name}` : '';
@@ -209,7 +233,7 @@ function ScopePicker({
 }
 
 export default function HomePage() {
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, authorizationChecked } = useAuth();
   const {
     properties,
     activeProperty,
@@ -224,6 +248,8 @@ export default function HomePage() {
   const replaceNavigation = navigation.replace;
   const pushNavigation = navigation.push;
   const hotelDrilldown = acting?.request.kind === 'hotel';
+  const explicitActingScope = acting?.scope.kind === 'company'
+    || acting?.request.kind === 'portfolio_scope';
   const portfolioEntryPending = shouldWaitForPortfolioEntry({
     hotelDrilldown,
     portfolioLoading: portfolio.loading,
@@ -232,6 +258,15 @@ export default function HomePage() {
   // company leader stays here and Home renders the company scope. The decision
   // is a pure function whose vocabulary contains no other world to send them to.
   const companyOptions = portfolio.data?.contexts ?? [];
+  const companyHatUser = portfolio.data?.hasCompanyHat === true;
+  const companyLandingDestination = hotelDrilldown || explicitActingScope
+    ? null
+    : companyDefaultEntryDestination({
+        companyHat: companyHatUser,
+        sessionSelected: sessionHotelWasChosen(),
+        explicitScope: explicitActingScope,
+        bootstrapError: portfolio.enabled && portfolio.error !== null,
+      });
   const entry = resolveHomeEntry({
     authLoading,
     propertyLoading,
@@ -253,6 +288,7 @@ export default function HomePage() {
       return;
     }
     if (!setActiveScope({ kind: 'hotel', propertyId: row.propertyId }).ok) return;
+    markSessionHotelChosen();
     pushNavigation(localAppHref('/home'));
   }, [pushNavigation, setActiveScope]);
 
@@ -261,13 +297,23 @@ export default function HomePage() {
   // left visible, then navigate to Sign In. Accounts with no company option and
   // no selected hotel keep the picker's explicit pending/empty state.
   React.useEffect(() => {
+    if (companyLandingDestination === '/property-selector') {
+      replaceNavigation('/property-selector');
+      return;
+    }
     if (entry.kind === 'signin') {
       replaceNavigation('/signin');
       return;
     }
     if (entry.kind === 'property_selector') replaceNavigation('/property-selector');
-  }, [entry.kind, replaceNavigation]);
+  }, [companyLandingDestination, entry.kind, replaceNavigation]);
 
+  if (companyLandingDestination === '/property-selector') {
+    return <RouteLoadingState title="Opening hotel selector…" />;
+  }
+  if (authLoading || (user && !authorizationChecked)) {
+    return <RouteLoadingState title="Opening Home…" />;
+  }
   if (entry.kind === 'wait') return <RouteLoadingState title="Opening Home…" />;
   if (entry.kind === 'signin') return <RouteLoadingState title="Returning to Sign In…" />;
 

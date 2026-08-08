@@ -42,6 +42,7 @@ import {
 } from '@/components/agent/useAgentChat';
 import type { DisplayMessage } from '@/components/agent/MessageList';
 import { hotelChipLabel, type HotelChip } from '@/lib/company/vp-queue';
+import { companyRowLabel } from '@/lib/portfolio-ui/scope-switcher';
 import { CxIcon } from '@/components/concourse/icons';
 
 export type Lang = 'en' | 'es';
@@ -69,6 +70,7 @@ export interface PickerCompany {
 export interface CommandCenterPayload {
   hotels: PickerHotel[];
   reachableHotelCount: number;
+  hasCompanyHat: boolean;
   company: PickerCompany | null;
   companies: PickerCompany[];
   requiresCompanySelection: boolean;
@@ -233,6 +235,14 @@ const CC_CSS = `
 .cc-pf-sub{font-size:12.5px;color:#5C625C;margin-top:3px;line-height:1.45;}
 .cc-arrow{color:#8A9187;flex-shrink:0;transition:transform .18s ease,color .18s ease;}
 .cc-portfolio:hover .cc-arrow,.cc-hotel:hover .cc-arrow{transform:translateX(3px);color:#3E5C48;}
+.cc-company-all{display:flex;align-items:center;gap:14px;width:100%;text-align:left;cursor:pointer;
+  min-height:58px;background:#fff;border:1px solid rgba(62,92,72,.24);border-radius:16px;
+  padding:12px 15px;font:inherit;color:inherit;margin-bottom:10px;
+  transition:border-color .18s ease,box-shadow .26s ease,transform .18s ease;}
+.cc-company-all:hover{border-color:rgba(62,92,72,.5);box-shadow:0 12px 28px -24px rgba(31,35,28,.55);}
+.cc-company-all:active{transform:scale(.99);}
+.cc-company-all:focus-visible{outline:2px solid #3E5C48;outline-offset:3px;}
+.cc-company-all .cc-hotel-mark{color:#3E5C48;background:rgba(158,183,166,.24);}
 
 /* ── Ask across hotels ── */
 .cc-ask{margin-top:10px;background:#fff;border:1px solid rgba(31,35,28,.10);border-radius:18px;
@@ -623,6 +633,7 @@ export interface CommandCenterViewProps {
   payload: CommandCenterPayload;
   lang: Lang;
   onOpenHotel: (hotel: PickerHotel) => void;
+  onOpenCompany?: (organizationId: string) => void;
   onSelectCompany?: (organizationId: string) => void;
   onSignOut: () => void;
 }
@@ -699,6 +710,7 @@ export function CommandCenterView({
   payload,
   lang,
   onOpenHotel,
+  onOpenCompany,
   onSelectCompany,
   onSignOut,
 }: CommandCenterViewProps) {
@@ -730,6 +742,24 @@ export function CommandCenterView({
             lang={lang}
             onSelectCompany={onSelectCompany}
           />
+        )}
+
+        {company && onOpenCompany && (
+          <button
+            type="button"
+            className="cc-company-all"
+            onClick={() => onOpenCompany(company.organizationId)}
+            aria-label={companyRowLabel(company.organizationName)}
+          >
+            <span className="cc-hotel-mark" aria-hidden><CxIcon name="staxis" size={17} /></span>
+            <span className="cc-hotel-body">
+              <span className="cc-hotel-name" style={{ display: 'block' }}>
+                {companyRowLabel(company.organizationName)}
+              </span>
+              <span className="cc-hotel-sub">Open the company view</span>
+            </span>
+            <Arrow />
+          </button>
         )}
 
         {company && (

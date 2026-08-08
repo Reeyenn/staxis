@@ -127,6 +127,7 @@ interface HotelWire {
 interface BootstrapWire {
   hotels: HotelWire[];
   reachableHotelCount: number;
+  hasCompanyHat: boolean;
   company: { organizationId: string; organizationName: string; companyRole: string; hotelCount: number } | null;
   companies: Array<{
     organizationId: string;
@@ -167,6 +168,7 @@ async function bootstrapFor(
     data: parsed.data ?? {
       hotels: [],
       reachableHotelCount: 0,
+      hasCompanyHat: false,
       company: null,
       companies: [],
       requiresCompanySelection: false,

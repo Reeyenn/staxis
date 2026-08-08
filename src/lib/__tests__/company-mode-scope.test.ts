@@ -5,6 +5,7 @@ import {
   anySectionOn,
   appScopeKey,
   companyEntryDestination,
+  companyDefaultEntryDestination,
   companyScopeHref,
   isLegacyPortfolioWorldPath,
   localAppHref,
@@ -17,6 +18,7 @@ import {
   type ActingScopeRequest,
   type AppScope,
 } from '@/lib/portfolio-ui/acting-scope';
+import { accountHasCompanyHat, isCompanyHat } from '@/lib/company/access';
 import {
   activeScopeSwitcherKey,
   buildScopeSwitcherRows,
@@ -568,6 +570,47 @@ describe('entry rerouting away from the standalone portfolio world', () => {
       'unrelated filters survive the scope change',
     );
   });
+});
+
+describe('company-hat default entry policy', () => {
+  test('only owner and regional-manager company hats count as exact company identity', () => {
+    assert.equal(isCompanyHat({ scope: 'company', role: 'owner' }), true);
+    assert.equal(isCompanyHat({ scope: 'company', role: 'regional_manager' }), true);
+    assert.equal(isCompanyHat({ scope: 'property', role: 'general_manager' }), false);
+    assert.equal(accountHasCompanyHat([]), false, 'grant-only contexts have no hat');
+    assert.equal(accountHasCompanyHat([{ scope: 'company', role: 'owner' }]), true);
+  });
+
+  test('fresh company entry selects hotels, while an in-session choice reaches Home', () => {
+    assert.equal(
+      companyDefaultEntryDestination({ companyHat: true, sessionSelected: false }),
+      '/property-selector',
+    );
+    assert.equal(
+      companyDefaultEntryDestination({ companyHat: true, sessionSelected: true }),
+      '/home',
+    );
+    assert.equal(
+      companyDefaultEntryDestination({ companyHat: false, sessionSelected: true }),
+      null,
+    );
+    assert.equal(
+      companyDefaultEntryDestination({ companyHat: true, sessionSelected: false, explicitScope: true }),
+      null,
+      'an explicit company acting URL is a deep link, not a default entry',
+    );
+    assert.equal(
+      companyDefaultEntryDestination({ companyHat: false, sessionSelected: false, bootstrapError: true }),
+      '/property-selector',
+      'an enabled bootstrap error must fail toward the selector instead of resuming a hotel',
+    );
+    assert.equal(
+      companyDefaultEntryDestination({ companyHat: false, sessionSelected: true, bootstrapError: true, explicitScope: true }),
+      null,
+      'deep links stay untouched even when the discovery bootstrap fails',
+    );
+  });
+
 });
 
 describe('Home entry decision', () => {

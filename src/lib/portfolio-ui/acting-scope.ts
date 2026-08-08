@@ -104,6 +104,21 @@ export const UNRESOLVED_UNAVAILABLE: AppScope = {
   reason: 'selection_unavailable',
 };
 
+/** Session marker used only for default-entry landing, never for authority. */
+export function companyDefaultEntryDestination(input: {
+  companyHat: boolean;
+  sessionSelected: boolean;
+  /** Explicit hotel/company acting URLs are deep links, not default entry. */
+  explicitScope?: boolean;
+  /** A failed enabled bootstrap cannot prove this is hotel-only. */
+  bootstrapError?: boolean;
+}): '/property-selector' | '/home' | null {
+  if (input.explicitScope) return null;
+  if (input.bootstrapError) return '/property-selector';
+  if (!input.companyHat) return null;
+  return input.sessionSelected ? '/home' : '/property-selector';
+}
+
 /**
  * The standalone portfolio world. Those routes still render from the portfolio
  * bootstrap and deliberately never load the hotel roster, so company MODE stops

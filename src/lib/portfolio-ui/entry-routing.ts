@@ -11,6 +11,9 @@ interface PortfolioBootstrapDecision {
   propertyStandings: readonly PortfolioEntryStanding[];
   explicitPortfolioContext: boolean;
   entryRoute: boolean;
+  /** The public root is also a default-entry door. It must discover an exact
+   * company hat before it can safely leave the marketing surface. */
+  defaultEntryRoute?: boolean;
   /**
    * Any signed-in app route that can OFFER a company. Company view is a mode of
    * the ordinary app now, so the switcher has to be able to show the company row
@@ -29,8 +32,12 @@ export function shouldLoadPortfolioBootstrap(input: PortfolioBootstrapDecision):
   if (!input.signedIn || input.authLoading || input.browserRoleIsAdmin) return false;
   if (input.platformAdmin) return false;
   if (input.explicitPortfolioContext) return true;
-  return (input.entryRoute || input.companyModeRoute === true)
-    && input.authorizationChecked
+  if (!input.authorizationChecked) return false;
+  if (input.defaultEntryRoute || input.entryRoute) {
+    return input.propertyStandings.length === 0
+      || input.propertyStandings.some((standing) => standing.portfolioIntelligenceRead);
+  }
+  return input.companyModeRoute === true
     && input.propertyStandings.some((standing) => standing.portfolioIntelligenceRead);
 }
 
