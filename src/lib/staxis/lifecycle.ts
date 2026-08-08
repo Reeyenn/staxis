@@ -44,21 +44,21 @@ export interface LifecycleOwnerSnapshot {
 
 export interface LifecycleSourceSummary {
   id: string;
-  kind: string;
+  kind: SourceKind;
   label: string;
   reference: string;
-  /** Validated source-fact envelope metadata. Optional for hand-authored UI fixtures. */
-  contractVersion?: typeof SOURCE_FACT_CONTRACT_VERSION;
-  sourceDefinitionId?: string;
-  claimScope?: string;
-  receiptId: string | null;
-  receiptHash: string | null;
+  contractVersion: typeof SOURCE_FACT_CONTRACT_VERSION;
+  sourceDefinitionId: string;
+  claimScope: string;
+  receiptId: string;
+  receiptHash: string;
   effectiveAt: string;
   asOf: string;
   observedAt: string;
   receivedAt: string;
   completeness: SourceCompleteness;
   completenessReason: string | null;
+  completenessRequired: SourceCompleteness;
   freshness: SourceFreshness;
   freshnessMaxAgeSeconds: number | null;
   owner: LifecycleOwnerSnapshot;
@@ -94,9 +94,16 @@ export interface LifecycleDomainWorkItem {
   observedAt: string;
 }
 
+export interface LifecycleAuthorityScope {
+  claimScope: string;
+  authority: number;
+  precedence: number;
+}
+
 export interface LifecycleOutcome {
   state: OutcomeVerificationState;
   basis: string | null;
+  sourceFactId: string | null;
   observedAt: string | null;
 }
 
@@ -121,10 +128,11 @@ export interface LifecycleProjection {
   recordedAt: string;
   freshness: { status: SourceFreshness; maxAgeSeconds: number | null };
   completeness: { status: SourceCompleteness; reason: string | null };
-  authority: { owner: LifecycleOwnerSnapshot; level: number | null; precedence: number | null };
+  authority: { owner: LifecycleOwnerSnapshot; level: number | null; precedence: number | null; scopes: readonly LifecycleAuthorityScope[] };
   action: LifecycleActionProjection | null;
   domainWorkItem: LifecycleDomainWorkItem | null;
   outcome: LifecycleOutcome | null;
+  outcomeEvidenceId: string | null;
   reason: string | null;
 }
 
@@ -173,7 +181,8 @@ function text(value: unknown, max = 2_000): string | null {
 
 function nullableText(value: unknown, max = 2_000): string | null | undefined {
   if (value === null) return null;
-  return text(value, max);
+  const parsed = text(value, max);
+  return parsed ?? undefined;
 }
 
 function uuid(value: unknown): string | null {
@@ -183,7 +192,8 @@ function uuid(value: unknown): string | null {
 
 function nullableUuid(value: unknown): string | null | undefined {
   if (value === null) return null;
-  return uuid(value);
+  const parsed = uuid(value);
+  return parsed ?? undefined;
 }
 
 function iso(value: unknown): string | null {
@@ -194,7 +204,8 @@ function iso(value: unknown): string | null {
 
 function nullableIso(value: unknown): string | null | undefined {
   if (value === null) return null;
-  return iso(value);
+  const parsed = iso(value);
+  return parsed ?? undefined;
 }
 
 function nonnegativeInteger(value: unknown): number | null {
@@ -222,6 +233,17 @@ function sourceCompleteness(value: unknown): SourceCompleteness | null {
 function sourceFreshness(value: unknown): SourceFreshness | null {
   if (value === 'fresh' || value === 'stale' || value === 'unknown') return value;
   return null;
+}
+
+function completenessMeets(actual: SourceCompleteness, required: SourceCompleteness): boolean {
+  const rank: Record<SourceCompleteness, number> = { unknown: 0, partial: 1, complete: 2 };
+  return rank[actual] >= rank[required];
+}
+
+function safeSourceReference(value: string): boolean {
+  return !/[\\/]/.test(value)
+    && !/(^|:)https?:\/\//i.test(value)
+    && !/(attachment|storage|bucket|raw[_-]?path)/i.test(value);
 }
 
 function ownerKind(value: unknown): LifecycleOwnerSnapshot['kind'] | null {
@@ -332,14 +354,16 @@ function sourceSummary(value: unknown): LifecycleSourceSummary | null {
   const completeness = sourceCompleteness(value.completeness);
   const freshness = sourceFreshness(value.freshness);
   const freshnessMaxAgeSeconds = positiveInteger(value.freshnessMaxAgeSeconds);
+  const completenessRequired = sourceCompleteness(value.completenessRequired);
   const owner = ownerSnapshot(value.owner, true);
   const authority = nonnegativeInteger(value.authority);
   const precedence = nonnegativeInteger(value.precedence);
 
-  if (contractVersion !== SOURCE_FACT_CONTRACT_VERSION || !id || !kind || !sourceDefinitionId || !claimScope || !label || !reference || !receiptId || !receiptHash || !effectiveAt || !asOf || !observedAt || !receivedAt || !completeness || !freshness || !owner || authority === null || precedence === null) return null;
+  if (contractVersion !== SOURCE_FACT_CONTRACT_VERSION || !id || !kind || !sourceDefinitionId || !claimScope || !label || !reference || !safeSourceReference(reference) || !receiptId || !receiptHash || !effectiveAt || !asOf || !observedAt || !receivedAt || !completeness || !freshness || !completenessRequired || !owner || authority === null || precedence === null) return null;
   const appOwnedOwner = owner.kind === 'app' || owner.kind === 'hotel' || owner.kind === 'company' || owner.kind === 'staxis' || owner.kind === 'human' || owner.kind === 'system';
   if ((kind === 'app_owned' && !appOwnedOwner) || (kind === 'pms_report' && owner.kind !== 'pms')) return null;
-  if (!ordered([effectiveAt, asOf, observedAt, receivedAt])) return null;
+  if (!completenessMeets(completeness, completenessRequired)) return null;
+  if (!ordered([asOf, observedAt, receivedAt])) return null;
   if (freshnessMaxAgeSeconds === null) return null;
   if (completeness === 'complete' && value.completenessReason !== null) return null;
   const completenessReason = nullableText(value.completenessReason, 500);
@@ -361,6 +385,7 @@ function sourceSummary(value: unknown): LifecycleSourceSummary | null {
     receivedAt,
     completeness,
     completenessReason,
+    completenessRequired,
     freshness,
     freshnessMaxAgeSeconds,
     owner,
@@ -385,7 +410,7 @@ function actionAuthority(value: unknown): ActionAuthorityContract | null {
   const roles = uniqueStrings(value.roles, 120);
   const surfaces = uniqueStrings(value.surfaces, 120);
   const capability = nullableText(value.capability, 120);
-  if (value.propertyScoped !== true || !roles || roles.length === 0 || !surfaces || surfaces.length === 0 || capability === undefined) return null;
+  if (value.propertyScoped !== true || !roles || roles.length === 0 || !surfaces || surfaces.length === 0 || capability !== null) return null;
   return { propertyScoped: true, roles, capability, surfaces };
 }
 
@@ -487,16 +512,21 @@ function parseAction(value: unknown): LifecycleActionProjection | null {
   };
 }
 
-function parseTopLevelOutcome(value: unknown): LifecycleOutcome | null | undefined {
-  if (value === null) return null;
-  if (!record(value) || !has(value, 'state') || !has(value, 'basis') || !has(value, 'observed_at')) return undefined;
+function parseTopLevelOutcome(value: unknown, outcomeEvidenceId: string | null): LifecycleOutcome | null | undefined {
+  if (value === null) return outcomeEvidenceId === null ? null : undefined;
+  if (!record(value) || !has(value, 'id') || !has(value, 'state') || !has(value, 'basis') || !has(value, 'sourceFactId') || !has(value, 'observed_at')) return undefined;
+  const id = nullableUuid(value.id);
   const state = outcomeState(value.state);
   const basis = nullableText(value.basis, 1_000);
+  const sourceFactId = nullableUuid(value.sourceFactId);
   const observedAt = nullableIso(value.observed_at);
-  if (!state || basis === undefined || observedAt === undefined) return undefined;
-  if (state === 'pending' && (basis !== null || observedAt !== null)) return undefined;
-  if (state !== 'pending' && (basis === null || observedAt === null)) return undefined;
-  return { state, basis, observedAt };
+  if (state === 'pending') {
+    if (id !== null || outcomeEvidenceId !== null || basis !== null || sourceFactId !== null || observedAt !== null) return undefined;
+    return { state, basis, sourceFactId, observedAt };
+  }
+  if (!id || outcomeEvidenceId === null || id !== outcomeEvidenceId || !state || basis === undefined || sourceFactId === undefined || observedAt === undefined) return undefined;
+  if (basis === null || observedAt === null) return undefined;
+  return { state, basis, sourceFactId, observedAt };
 }
 
 function parseDomainWorkItem(value: unknown): LifecycleDomainWorkItem | null | undefined {
@@ -521,6 +551,10 @@ function parseNullableId(value: Record<string, unknown>, key: string): string | 
   return has(value, key) ? nullableUuid(value[key]) : undefined;
 }
 
+function parseNullableEntityId(value: Record<string, unknown>, key: string): string | null | undefined {
+  return has(value, key) ? nullableText(value[key], 240) : undefined;
+}
+
 function parseNullableTime(value: Record<string, unknown>, key: string): string | null | undefined {
   return has(value, key) ? nullableIso(value[key]) : undefined;
 }
@@ -540,7 +574,7 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   const title = text(row.title, 300);
   const summary = text(row.summary, 2_000);
   const entityKind = text(row.entity_kind, 120);
-  const entityId = parseNullableId(row, 'entity_id');
+  const entityId = parseNullableEntityId(row, 'entity_id');
   const entityLabel = has(row, 'entity_label') ? nullableText(row.entity_label, 200) : undefined;
   const recordedAt = iso(row.recorded_at);
   const effectiveAt = parseNullableTime(row, 'effective_at');
@@ -550,9 +584,10 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   const proposalId = parseNullableId(row, 'proposal_id');
   const approvalId = parseNullableId(row, 'approval_id');
   const executionReceiptId = parseNullableId(row, 'execution_receipt_id');
+  const outcomeEvidenceId = parseNullableId(row, 'outcome_evidence_id');
   const reason = has(row, 'reason') ? nullableText(row.reason, 1_000) : undefined;
-  if (contractVersion !== LIFECYCLE_CONTRACT_VERSION || !id || !propertyId || !state || !title || !summary || !entityKind || entityId === undefined || entityLabel === undefined || !recordedAt || effectiveAt === undefined || asOf === undefined || observedAt === undefined || findingId === undefined || proposalId === undefined || approvalId === undefined || executionReceiptId === undefined || reason === undefined) return null;
-  if (!ordered([effectiveAt, asOf, observedAt, recordedAt])) return null;
+  if (contractVersion !== LIFECYCLE_CONTRACT_VERSION || !id || !propertyId || !state || !title || !summary || !entityKind || entityId === undefined || entityLabel === undefined || !recordedAt || effectiveAt === undefined || asOf === undefined || observedAt === undefined || findingId === undefined || proposalId === undefined || approvalId === undefined || executionReceiptId === undefined || outcomeEvidenceId === undefined || reason === undefined) return null;
+  if (!ordered([asOf, observedAt, recordedAt])) return null;
 
   const sourceFactIds = uniqueUuids(row.source_fact_ids);
   if (!sourceFactIds) return null;
@@ -594,6 +629,21 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   const authorityPrecedence = row.authority.precedence === null ? null : nonnegativeInteger(row.authority.precedence);
   if (!authorityOwner || authorityLevel === null && row.authority.level !== null || authorityPrecedence === null && row.authority.precedence !== null) return null;
   if ((authorityLevel === null) !== (authorityPrecedence === null)) return null;
+  if (!has(row.authority, 'scopes') || !Array.isArray(row.authority.scopes)) return null;
+  const authorityScopes: LifecycleAuthorityScope[] = [];
+  const authorityScopeIds = new Set<string>();
+  for (const scope of row.authority.scopes) {
+    if (!record(scope) || !has(scope, 'claimScope') || !has(scope, 'authority') || !has(scope, 'precedence')) return null;
+    const claimScope = text(scope.claimScope, 200);
+    const scopeAuthority = nonnegativeInteger(scope.authority);
+    const scopePrecedence = nonnegativeInteger(scope.precedence);
+    if (!claimScope || scopeAuthority === null || scopePrecedence === null || authorityScopeIds.has(claimScope)) return null;
+    authorityScopeIds.add(claimScope);
+    authorityScopes.push({ claimScope, authority: scopeAuthority, precedence: scopePrecedence });
+  }
+  if (authorityScopes.length === 0 && (authorityLevel !== null || authorityPrecedence !== null)) return null;
+  if (authorityScopes.length === 1 && (authorityLevel !== authorityScopes[0].authority || authorityPrecedence !== authorityScopes[0].precedence)) return null;
+  if (authorityScopes.length > 1 && (authorityLevel !== null || authorityPrecedence !== null)) return null;
 
   if (!has(row, 'action')) return null;
   const actionRaw = row.action;
@@ -602,22 +652,24 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
 
   const domainWorkItem = parseDomainWorkItem(row.domain_work_item);
   if (domainWorkItem === undefined) return null;
-  const outcome = parseTopLevelOutcome(row.outcome);
+  if (domainWorkItem && Date.parse(domainWorkItem.observedAt) > Date.parse(recordedAt)) return null;
+  const outcome = parseTopLevelOutcome(row.outcome, outcomeEvidenceId);
   if (outcome === undefined) return null;
 
   if (state === 'observed') {
-    if (action !== null || outcome !== null || executionReceiptId !== null) return null;
+    if (action !== null || outcome !== null || outcomeEvidenceId !== null || executionReceiptId !== null) return null;
   } else {
     if (!action) return null;
   }
-  if ((state === 'proposed' || state === 'approved') && (executionReceiptId !== null || outcome !== null)) return null;
+  if ((state === 'proposed' || state === 'approved') && (executionReceiptId !== null || outcome !== null || outcomeEvidenceId !== null)) return null;
+  if (state === 'executed' && outcomeEvidenceId !== null) return null;
   if (state === 'proposed' && action?.approval.state !== 'required') return null;
   if (state === 'approved' && action && action.approval.state !== 'approved' && action.approval.state !== 'not_required') return null;
   if ((state === 'executed' || state === 'outcome_verified' || state === 'not_observable' || state === 'unverifiable') && action && action.approval.state !== 'approved' && action.approval.state !== 'not_required') return null;
   if ((state === 'executed' || state === 'outcome_verified' || state === 'not_observable' || state === 'unverifiable') && executionReceiptId === null) return null;
   if (state === 'executed' && action && action.outcome.state !== 'pending') return null;
-  if (state === 'outcome_verified' && (!action || action.outcome.state !== 'verified' || !outcome || outcome.state !== 'verified')) return null;
-  if ((state === 'not_observable' || state === 'unverifiable') && (!action || action.outcome.state !== state || !outcome || outcome.state !== state)) return null;
+  if (state === 'outcome_verified' && (!action || action.outcome.state !== 'verified' || !outcome || outcome.state !== 'verified' || !outcome.sourceFactId || !sourceFactIds.includes(outcome.sourceFactId) || outcomeEvidenceId === null)) return null;
+  if ((state === 'not_observable' || state === 'unverifiable') && (!action || action.outcome.state !== state || !outcome || outcome.state !== state || outcome.sourceFactId !== null || outcomeEvidenceId === null)) return null;
   if (state === 'executed' && (!outcome || outcome.state !== 'pending')) return null;
   if (action && outcome && action.outcome.state !== outcome.state) return null;
   if (outcome && outcome.observedAt && Date.parse(outcome.observedAt) > Date.parse(recordedAt)) return null;
@@ -643,10 +695,11 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
     recordedAt,
     freshness: { status: freshnessStatus, maxAgeSeconds: freshnessMaxAgeSeconds },
     completeness: { status: completenessStatus, reason: completenessReason },
-    authority: { owner: authorityOwner, level: authorityLevel, precedence: authorityPrecedence },
+    authority: { owner: authorityOwner, level: authorityLevel, precedence: authorityPrecedence, scopes: authorityScopes },
     action,
     domainWorkItem,
     outcome,
+    outcomeEvidenceId,
     reason,
   };
 }

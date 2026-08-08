@@ -110,6 +110,13 @@ export function lifecycleOutcomeLabel(
   return outcome.basis?.trim() ? `${label} — ${outcome.basis.trim()}` : label;
 }
 
+function lifecycleOutcomeProofLabel(item: LifecycleProjectionItem): string | null {
+  if (item.outcomeEvidenceId && item.outcome?.sourceFactId) return 'Outcome evidence and source fact recorded';
+  if (item.outcomeEvidenceId) return 'Outcome evidence recorded';
+  if (item.outcome?.sourceFactId) return 'Source fact recorded';
+  return null;
+}
+
 function isTerminalState(state: LifecycleProjectionState): boolean {
   return state === 'not_observable' || state === 'unverifiable';
 }
@@ -200,6 +207,7 @@ function LifecycleItem({ item }: { item: LifecycleProjectionItem }) {
   const observedAt = lifecycleTime(item.observedAt);
   const recordedAt = lifecycleTime(item.recordedAt);
   const outcomeEvidenceAt = lifecycleTime(action?.outcome?.observedAt ?? item.outcome?.observedAt);
+  const outcomeProofLabel = lifecycleOutcomeProofLabel(item);
   return (
     <article className="fx-life-item" data-lifecycle-state={item.state}>
       <div className="fx-life-item-head">
@@ -286,6 +294,7 @@ function LifecycleItem({ item }: { item: LifecycleProjectionItem }) {
             <span>
               {lifecycleOutcomeLabel(action.outcome)}
               {outcomeEvidenceAt ? ` · ${outcomeEvidenceAt}` : ''}
+              {outcomeProofLabel ? ` · ${outcomeProofLabel}` : ''}
             </span>
           </div>
         </div>
@@ -298,6 +307,7 @@ function LifecycleItem({ item }: { item: LifecycleProjectionItem }) {
             <span>
               {lifecycleOutcomeLabel(item.outcome)}
               {outcomeEvidenceAt ? ` · ${outcomeEvidenceAt}` : ''}
+              {outcomeProofLabel ? ` · ${outcomeProofLabel}` : ''}
             </span>
           </div>
         </div>

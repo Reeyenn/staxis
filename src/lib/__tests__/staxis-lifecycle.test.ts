@@ -18,6 +18,7 @@ const PROPOSAL_ID = '70000000-0000-4000-8000-000000000001';
 const APPROVAL_ID = '80000000-0000-4000-8000-000000000001';
 const EXECUTION_RECEIPT_ID = '90000000-0000-4000-8000-000000000001';
 const WORK_ITEM_ID = 'a0000000-0000-4000-8000-000000000001';
+const OUTCOME_EVENT_ID = 'b0000000-0000-4000-8000-000000000002';
 const HASH = 'a'.repeat(64);
 
 const SOURCE = {
@@ -36,6 +37,7 @@ const SOURCE = {
   receivedAt: '2026-08-08T10:02:00.000Z',
   completeness: 'complete',
   completenessReason: null,
+  completenessRequired: 'complete',
   freshness: 'fresh',
   freshnessMaxAgeSeconds: 3_600,
   owner: { kind: 'app', label: 'Example source', role: 'system' },
@@ -60,7 +62,7 @@ function action(overrides: Record<string, unknown> = {}) {
     authority: {
       propertyScoped: true,
       roles: ['manager'],
-      capability: 'work_orders.create',
+      capability: null,
       surfaces: ['feed'],
     },
     approval: {
@@ -123,13 +125,15 @@ function baseRow(state: LifecycleState): Record<string, unknown> {
   });
   const itemOutcome = state === 'observed' || state === 'proposed' || state === 'approved'
     ? null
-    : { state: outcomeState, basis: evidence.basis, observed_at: evidence.observedAt };
+    : state === 'executed'
+      ? { id: null, state: 'pending', basis: null, sourceFactId: null, observed_at: null }
+      : { id: OUTCOME_EVENT_ID, state: outcomeState, basis: evidence.basis, sourceFactId: state === 'outcome_verified' ? SOURCE_ID : null, observed_at: evidence.observedAt };
   return {
     contract_version: LIFECYCLE_CONTRACT_VERSION,
     projection_id: PROJECTION_ID,
     property_id: PID,
     entity_kind: 'example_entity',
-    entity_id: 'b0000000-0000-4000-8000-000000000001',
+    entity_id: 'room-214',
     entity_label: 'Ava',
     title: `Example lifecycle ${state}`,
     summary: 'A bounded lifecycle projection.',
@@ -139,6 +143,7 @@ function baseRow(state: LifecycleState): Record<string, unknown> {
     proposal_id: state === 'observed' ? null : PROPOSAL_ID,
     approval_id: state === 'approved' || executed ? APPROVAL_ID : null,
     execution_receipt_id: executed ? EXECUTION_RECEIPT_ID : null,
+    outcome_evidence_id: terminal ? OUTCOME_EVENT_ID : null,
     source_fact_ids: [SOURCE_ID],
     sources: [SOURCE],
     effective_at: '2026-08-08T10:00:00.000Z',
@@ -147,7 +152,7 @@ function baseRow(state: LifecycleState): Record<string, unknown> {
     recorded_at: '2026-08-08T10:05:00.000Z',
     freshness: { status: 'fresh', max_age_seconds: 3_600 },
     completeness: { status: 'complete', reason: null },
-    authority: { owner: { kind: 'app', label: 'Example source', role: 'system' }, level: 7, precedence: 3 },
+    authority: { owner: { kind: 'app', label: 'Example source', role: 'system' }, level: 7, precedence: 3, scopes: [{ claimScope: 'example.claim', authority: 7, precedence: 3 }] },
     action: itemAction,
     domain_work_item: state === 'observed' ? null : { kind: 'work_order', id: WORK_ITEM_ID, label: 'Inspect example record', href: null, observedAt: '2026-08-08T10:04:00.000Z', owner: { kind: 'human', label: 'Morgan', role: 'GM' } },
     outcome: itemOutcome,
@@ -179,14 +184,23 @@ describe('strict lifecycle projection parser', () => {
     const verified = parseLifecycleProjectionRow(baseRow('outcome_verified'));
     assert.equal(executed?.executionReceiptId, EXECUTION_RECEIPT_ID);
     assert.equal(executed?.action?.outcome.state, 'pending');
+    assert.equal(executed?.outcome?.state, 'pending');
     assert.equal(verified?.action?.outcome.state, 'verified');
     assert.equal(verified?.outcome?.state, 'verified');
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('executed'), outcome: null }), null);
   });
 
   test('rejects malformed dates and chronology', () => {
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), recorded_at: 'not-a-date' }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, asOf: '2026-08-08T10:03:00.000Z' }] }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, receivedAt: '2026-08-08T10:06:00.000Z' }] }), null);
+    assert.ok(parseLifecycleProjectionRow({
+      ...baseRow('observed'),
+      entity_id: 'room-214',
+      effective_at: '2026-08-08T12:00:00.000Z',
+      sources: [{ ...SOURCE, effectiveAt: '2026-08-08T12:00:00.000Z' }],
+    }));
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), entity_id: 214 }), null);
   });
 
   test('rejects invalid, duplicate, or mismatched source identity sets', () => {
@@ -201,9 +215,12 @@ describe('strict lifecycle projection parser', () => {
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, receiptHash: 'short' }] }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, kind: 'unknown' }] }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, owner: null }] }), null);
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, completenessRequired: 'yes' }] }), null);
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, completeness: 'partial' }] }), null);
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, reference: 'storage/raw/report.json' }] }), null);
     assert.ok(parseLifecycleProjectionRow({ ...baseRow('observed'), sources: [{ ...SOURCE, freshness: 'unknown' }] }));
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), authority: { owner: { kind: 'human', label: null, role: null }, level: 1, precedence: 1 } }), null);
-    assert.ok(parseLifecycleProjectionRow({ ...baseRow('observed'), authority: { owner: { kind: 'unknown', label: null, role: null }, level: null, precedence: null } }));
+    assert.ok(parseLifecycleProjectionRow({ ...baseRow('observed'), authority: { owner: { kind: 'unknown', label: null, role: null }, level: null, precedence: null, scopes: [{ claimScope: 'example.claim', authority: 7, precedence: 3 }, { claimScope: 'another.claim', authority: 4, precedence: 2 }] } }));
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('observed'), authority: { owner: { kind: 'app', label: 'Example source', role: 'system' }, level: -1, precedence: 3 } }), null);
   });
 
@@ -227,6 +244,10 @@ describe('strict lifecycle projection parser', () => {
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('outcome_verified'), outcome: { state: 'verified', basis: null, observed_at: null } }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('unverifiable'), outcome: { state: 'unverifiable', basis: 'No receipt', observed_at: null } }), null);
     assert.equal(parseLifecycleProjectionRow({ ...baseRow('not_observable'), action: action({ approval: { ...action().approval, state: 'approved' }, outcome: { ...action().outcome, verificationState: 'pending', state: 'pending' } }) }), null);
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('outcome_verified'), outcome_evidence_id: null }), null);
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('outcome_verified'), outcome: { ...baseRow('outcome_verified').outcome as Record<string, unknown>, sourceFactId: null } }), null);
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('outcome_verified'), outcome: { ...baseRow('outcome_verified').outcome as Record<string, unknown>, sourceFactId: 'd0000000-0000-4000-8000-000000000001' } }), null);
+    assert.equal(parseLifecycleProjectionRow({ ...baseRow('not_observable'), outcome: { ...baseRow('not_observable').outcome as Record<string, unknown>, sourceFactId: SOURCE_ID } }), null);
   });
 
   test('requires a timestamp for domain custody snapshots', () => {
@@ -239,6 +260,7 @@ describe('strict lifecycle projection parser', () => {
         domain_work_item: Object.fromEntries(Object.entries(domain).filter(([key]) => key !== 'observedAt')),
       };
       assert.equal(parseLifecycleProjectionRow(withoutObservedAt), null);
+      assert.equal(parseLifecycleProjectionRow({ ...row, domain_work_item: { ...domain, observedAt: '2026-08-08T10:06:00.000Z' } }), null);
     }
   });
 });

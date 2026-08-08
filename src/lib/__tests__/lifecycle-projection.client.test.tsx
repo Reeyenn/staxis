@@ -81,9 +81,12 @@ describe('Staxis lifecycle projection copy', () => {
       lifecycleSourceSummary(
         [{
           id: 'unsafe-id',
-          kind: 'pms',
+          kind: 'pms_report',
           label: 'PMS report',
           reference: 'Daily room status',
+          contractVersion: 'staxis-source-fact.v1',
+          sourceDefinitionId: 'source-definition-id',
+          claimScope: 'example.claim',
           receiptId: 'receipt-id',
           receiptHash: 'hash',
           effectiveAt: '2026-08-08T12:00:00.000Z',
@@ -92,6 +95,7 @@ describe('Staxis lifecycle projection copy', () => {
           receivedAt: '2026-08-08T12:00:00.000Z',
           completeness: 'complete',
           completenessReason: null,
+          completenessRequired: 'complete',
           freshness: 'fresh',
           freshnessMaxAgeSeconds: 300,
           owner: { kind: 'pms', label: 'PMS', role: null },
@@ -100,7 +104,7 @@ describe('Staxis lifecycle projection copy', () => {
         }],
         ['fact-id'],
       ),
-      'PMS report · pms · Daily room status · 1 source fact recorded · 1 source receipt recorded',
+      'PMS report · pms_report · Daily room status · 1 source fact recorded · 1 source receipt recorded',
     );
   });
 
@@ -167,9 +171,12 @@ describe('Staxis lifecycle projection copy', () => {
         sourceFactIds: ['source-id'],
         sources: [{
           id: 'source-id',
-          kind: 'pms',
+          kind: 'pms_report',
           label: 'PMS report',
           reference: 'Daily room status',
+          contractVersion: 'staxis-source-fact.v1',
+          sourceDefinitionId: 'source-definition-id',
+          claimScope: 'example.claim',
           receiptId: 'source-receipt-id',
           receiptHash: 'source-hash',
           effectiveAt: '2026-08-08T11:00:00.000Z',
@@ -178,6 +185,7 @@ describe('Staxis lifecycle projection copy', () => {
           receivedAt: '2026-08-08T11:06:00.000Z',
           completeness: 'complete' as const,
           completenessReason: null,
+          completenessRequired: 'complete',
           freshness: 'fresh' as const,
           freshnessMaxAgeSeconds: 300,
           owner: { kind: 'pms' as const, label: 'PMS', role: null },
@@ -190,7 +198,7 @@ describe('Staxis lifecycle projection copy', () => {
         recordedAt: '2026-08-08T11:06:00.000Z',
         freshness: { status: 'fresh' as const, maxAgeSeconds: 300 },
         completeness: { status: 'complete' as const, reason: null },
-        authority: { owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' }, level: 2, precedence: 1 },
+        authority: { owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' }, level: 2, precedence: 1, scopes: [{ claimScope: 'example.claim', authority: 2, precedence: 1 }] },
         action: {
           id: 'action-id',
           kind: 'create_work_order',
@@ -218,7 +226,8 @@ describe('Staxis lifecycle projection copy', () => {
           },
         },
         domainWorkItem: { kind: 'work_order', id: 'work-id', label: 'Room 214 inspection', href: null, observedAt: '2026-08-08T11:06:00.000Z', owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' } },
-        outcome: { state: 'not_observable' as const, basis: 'The source does not expose completion.', observedAt: null },
+        outcome: { state: 'not_observable' as const, basis: 'The source does not expose completion.', sourceFactId: null, observedAt: null },
+        outcomeEvidenceId: 'outcome-evidence-id',
         reason: 'No trusted completion signal is available.',
       }],
     } satisfies LifecycleResponse;
@@ -232,6 +241,7 @@ describe('Staxis lifecycle projection copy', () => {
     assert.match(rendered, /Owner at last verified update: Morgan \(GM\)/);
     assert.match(rendered, /Room 214 inspection reference recorded/);
     assert.match(rendered, /Not observable/);
+    assert.match(rendered, /Outcome evidence recorded/);
     const completedSteps = findAll(tree, (props) => props.className === 'fx-life-state fx-life-state-on');
     assert.equal(completedSteps.length, 4);
     assert.equal(findAll(tree, (props) => props.className === 'fx-life-state fx-life-state-terminal').length, 1);
