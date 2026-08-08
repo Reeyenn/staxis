@@ -49,10 +49,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
-import {
-  createRequestAuthorization,
-  type HotelAuthorizationRefusal,
-} from '@/lib/authorization/request';
+import { createRequestAuthorization } from '@/lib/authorization/request';
+import { inventoryAiAuthorizationRefusalResponse } from '@/lib/inventory-ai-authorization';
 import {
   activeInventoryItemIds,
   filterInventoryMlRowsToActiveItems,
@@ -76,24 +74,6 @@ export const maxDuration = 15;
 // before the doctor pages.
 const STALE_INFERENCE_HOURS = 26;
 
-function authorizationRefusalResponse(
-  refusal: HotelAuthorizationRefusal,
-  requestId: string,
-): NextResponse {
-  // Section failures carry the existing section-disabled/unavailable response
-  // and must reach the caller unchanged.
-  if (refusal.reason === 'section_denied') return refusal.response;
-
-  // The former property-access gate collapsed account, authority, and property
-  // failures into this exact generic 403 envelope. Keep that wire contract
-  // while the facade supplies the authoritative decision.
-  return err('forbidden', {
-    requestId,
-    status: 403,
-    code: ApiErrorCode.Forbidden,
-  });
-}
-
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
   const authorization = createRequestAuthorization(req, { requestId });
@@ -109,7 +89,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     intent: 'read',
     checks: [{ kind: 'section', section: 'inventory' }],
   });
-  if (!hotel.ok) return authorizationRefusalResponse(hotel, requestId);
+  if (!hotel.ok) return inventoryAiAuthorizationRefusalResponse(hotel, requestId);
 
   try {
     const sevenDaysAgoIso = new Date(Date.now() - 7 * 86400000).toISOString();
