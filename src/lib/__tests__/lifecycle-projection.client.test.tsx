@@ -150,6 +150,27 @@ describe('Staxis lifecycle projection copy', () => {
     assert.match(lifecycleTime('2026-08-08T12:00:00.000Z') ?? '', /Aug 8/);
   });
 
+  test('fails closed for legacy or malformed successful lifecycle payloads', async () => {
+    const { LifecycleProjection } = await import('@/components/concourse/LifecycleProjection');
+
+    const legacyTree = resolveTree(LifecycleProjection({ payload: {} as LifecycleResponse }));
+    const legacyText = textOf(legacyTree).join(' ');
+    assert.match(legacyText, /complete lifecycle projection/);
+    assert.doesNotMatch(legacyText, /No lifecycle records are available/);
+
+    const malformedTree = resolveTree(LifecycleProjection({
+      payload: {
+        contractVersion: 'staxis-lifecycle.v1',
+        generatedAt: '2026-08-08T12:00:00.000Z',
+        coverage: { returned: 1, limit: 100, truncated: false },
+        items: [{}],
+      } as unknown as LifecycleResponse,
+    }));
+    const malformedText = textOf(malformedTree).join(' ');
+    assert.match(malformedText, /complete lifecycle projection/);
+    assert.doesNotMatch(malformedText, /No lifecycle records are available/);
+  });
+
   test('renders the safe projection fields in one read-only card', async () => {
     const { LifecycleProjection } = await import('@/components/concourse/LifecycleProjection');
     const payload = {
