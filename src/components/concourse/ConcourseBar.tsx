@@ -51,6 +51,7 @@ import { useOptionalPortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 import { mapPortfolioUiRoute } from '@/lib/portfolio-ui/context';
 import type { AppSection } from '@/lib/sections/registry';
+import { signOutAndNavigateToSignin } from '@/lib/auth/sign-out-navigation';
 
 // ── The decisions badge, across remounts ────────────────────────────────────
 // Same remount problem, same shape of fix. The bar is torn down and rebuilt on
@@ -195,6 +196,11 @@ export function ConcourseBar() {
       return !v;
     });
   };
+
+  const handleSignOut = React.useCallback(
+    () => signOutAndNavigateToSignin(signOut),
+    [signOut],
+  );
 
   // Navigation feel: prefetch only on real pointer/focus intent. The previous
   // delayed all-route batch launched every section's server render together and
@@ -580,7 +586,7 @@ export function ConcourseBar() {
             <button
               type="button"
               className="cx-menu-item cx-danger"
-              onClick={() => { void signOut(); setMenuOpen(false); }}
+              onClick={() => { void handleSignOut(); setMenuOpen(false); }}
             >
               {t('signOut', lang)}
             </button>
@@ -632,7 +638,7 @@ export function ConcourseBar() {
         onHomeIntent={() => prefetch(homeHref)}
         onCompanyIntent={() => prefetch(companyHref)}
         onSettingsIntent={() => prefetch(portfolioScoped ? companyHref : '/settings')}
-        onSignOut={() => { void signOut(); }}
+        onSignOut={() => { void handleSignOut(); }}
         returnToAdminLabel={
           accountSwitch.switchedBackTo ? `Back to ${accountSwitch.switchedBackTo}` : undefined
         }

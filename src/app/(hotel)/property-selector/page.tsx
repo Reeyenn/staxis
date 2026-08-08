@@ -37,6 +37,7 @@ import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refres
 import { usePortfolio } from '@/contexts/PortfolioContext';
 import { shouldWaitForPortfolioBootstrapResult } from '@/lib/portfolio-ui/entry-routing';
 import { companyEntryDestination } from '@/lib/portfolio-ui/acting-scope';
+import { signOutAndNavigateToSignin } from '@/lib/auth/sign-out-navigation';
 
 import JoinStatusGate from '@/app/property-selector/JoinStatusGate';
 import {
@@ -238,7 +239,7 @@ export default function PropertySelectorPage() {
       sessionStorage.removeItem('hotelops-session-selected');
       sessionStorage.removeItem(RESUME_GUARD_KEY);
     } catch { /* sign-out must continue when storage is blocked */ }
-    await signOut();
+    await signOutAndNavigateToSignin(signOut);
   }, [signOut]);
 
   // A failed read is NOT "you have no hotels". It says so and offers a retry —
