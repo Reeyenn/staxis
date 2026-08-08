@@ -30,6 +30,7 @@ import {
   ALL_HOTELS_FILTER,
   conversationsWithHotelContext,
   hotelConversationKey,
+  hotelRefreshPropertyIds,
   hotelScopeOptions,
   resolveHotelActionPropertyId,
   shouldShowHotelContext,
@@ -215,9 +216,14 @@ function useHotelBootstraps(hotels: HotelScopeOption[], filter: string, activePi
   }, [hotelIdsKey, hotels, load]);
 
   const refreshIds = React.useMemo(() => {
-    if (filter === ALL_HOTELS_FILTER) return records.map((record) => record.propertyId);
-    return filter && hotelsById.has(filter) ? [filter] : activePid ? [activePid] : [];
-  }, [activePid, filter, hotelsById, records]);
+    return hotelRefreshPropertyIds({
+      filter,
+      activePropertyId: activePid,
+      candidatePropertyIds: Array.from(hotelsById.keys()),
+      successfulPropertyIds: records.map((record) => record.propertyId),
+      failures,
+    });
+  }, [activePid, failures, filter, hotelsById, records]);
   const refreshIdsKey = refreshIds.join(',');
 
   React.useEffect(() => {
@@ -228,10 +234,7 @@ function useHotelBootstraps(hotels: HotelScopeOption[], filter: string, activePi
     return () => window.clearInterval(interval);
   }, [load, refreshIds, refreshIdsKey]);
 
-  const reload = React.useCallback(() => load(
-    filter === ALL_HOTELS_FILTER ? hotels.map((hotel) => hotel.propertyId) : refreshIds,
-    true,
-  ), [filter, hotels, load, refreshIds]);
+  const reload = React.useCallback(() => load(refreshIds, true), [load, refreshIds]);
 
   return { records, failures, loading, error, reload };
 }

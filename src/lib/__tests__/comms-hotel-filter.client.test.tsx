@@ -7,6 +7,7 @@ import {
   ALL_HOTELS_FILTER,
   conversationsWithHotelContext,
   hotelConversationKey,
+  hotelRefreshPropertyIds,
   hotelScopeOptions,
   resolveHotelActionPropertyId,
   shouldShowHotelContext,
@@ -105,6 +106,41 @@ describe('Messages hotel scope/filter composition', () => {
     assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [] }), null);
     assert.equal(shouldShowHotelContext({ hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A] }), false);
     assert.equal(shouldShowHotelContext({ hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A, HOTEL_B] }), true);
+  });
+
+  test('retry targets keep transient hotels without retrying denied hotels', () => {
+    const candidates = [HOTEL_A, HOTEL_B];
+    assert.deepEqual(hotelRefreshPropertyIds({
+      filter: HOTEL_A,
+      activePropertyId: HOTEL_A,
+      candidatePropertyIds: candidates,
+      successfulPropertyIds: [HOTEL_A],
+      failures: [{ propertyId: HOTEL_B, unauthorized: false }],
+    }), candidates);
+    assert.deepEqual(hotelRefreshPropertyIds({
+      filter: HOTEL_A,
+      activePropertyId: HOTEL_A,
+      candidatePropertyIds: candidates,
+      successfulPropertyIds: [HOTEL_A],
+      failures: [{ propertyId: HOTEL_B, unauthorized: true }],
+    }), [HOTEL_A]);
+  });
+
+  test('All hotels with no successful records retries candidates still eligible', () => {
+    assert.deepEqual(hotelRefreshPropertyIds({
+      filter: ALL_HOTELS_FILTER,
+      activePropertyId: null,
+      candidatePropertyIds: [HOTEL_A, HOTEL_B],
+      successfulPropertyIds: [],
+      failures: [{ propertyId: HOTEL_B, unauthorized: false }],
+    }), [HOTEL_A, HOTEL_B]);
+    assert.deepEqual(hotelRefreshPropertyIds({
+      filter: ALL_HOTELS_FILTER,
+      activePropertyId: null,
+      candidatePropertyIds: [HOTEL_A, HOTEL_B],
+      successfulPropertyIds: [],
+      failures: [{ propertyId: HOTEL_B, unauthorized: true }],
+    }), [HOTEL_A]);
   });
 
   test('new hotel selector is labeled and has a mobile-sized target', () => {

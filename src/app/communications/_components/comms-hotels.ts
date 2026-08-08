@@ -72,11 +72,47 @@ export function visibleHotelConversations(
 }
 
 /**
+ * Keep polling/retry reads pointed at candidate hotels that may recover. The
+ * candidate list is already server-derived; failures are intersected with it,
+ * and current 403/404 denials are deliberately removed from every retry set.
+ */
+export function hotelRefreshPropertyIds(input: {
+  filter: string;
+  activePropertyId: string | null;
+  candidatePropertyIds: readonly string[];
+  successfulPropertyIds: readonly string[];
+  failures: readonly { propertyId: string; unauthorized: boolean }[];
+}): string[] {
+  const candidates = Array.from(new Set(input.candidatePropertyIds));
+  const candidateSet = new Set(candidates);
+  const denied = new Set(input.failures.filter((failure) => failure.unauthorized).map((failure) => failure.propertyId));
+  const transient = input.failures
+    .filter((failure) => !failure.unauthorized && candidateSet.has(failure.propertyId))
+    .map((failure) => failure.propertyId);
+  const successful = input.successfulPropertyIds
+    .filter((propertyId) => candidateSet.has(propertyId) && !denied.has(propertyId));
+  const preferred = input.filter === ALL_HOTELS_FILTER
+    ? (successful.length > 0 ? successful : candidates)
+    : input.filter
+      ? [input.filter]
+      : input.activePropertyId
+        ? [input.activePropertyId]
+        : [];
+  const result: string[] = [];
+  for (const propertyId of [...preferred, ...transient]) {
+    if (!candidateSet.has(propertyId) || denied.has(propertyId) || result.includes(propertyId)) continue;
+    result.push(propertyId);
+  }
+  return result;
+}
+
+/**
  * Resolve the hotel for an interaction that must call a pid-scoped endpoint.
  *
  * A specific hotel filter is already an explicit choice. In All hotels mode,
- * only the selected conversation supplies a safe pid; with neither choice the
- * caller must ask the person to choose a hotel instead of guessing.
+ * only the selected conversation or a sole successful hotel supplies a safe
+ * pid; with multiple available hotels and neither choice, ask the person to
+ * choose instead of guessing.
  */
 export function resolveHotelActionPropertyId(input: {
   selectedPropertyId: string | null;
