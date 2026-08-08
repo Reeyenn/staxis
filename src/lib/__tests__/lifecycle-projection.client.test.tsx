@@ -164,7 +164,7 @@ describe('Staxis lifecycle projection copy', () => {
         summary: 'A room needs an inspection.',
         state: 'not_observable' as const,
         priorStates: ['observed', 'proposed', 'approved', 'executed'] as const,
-        findingId: null,
+        findingId: 'finding-id',
         proposalId: 'proposal-id',
         approvalId: 'approval-id',
         executionReceiptId: 'execution-receipt-id',

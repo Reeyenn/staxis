@@ -33,7 +33,7 @@ export const LIFECYCLE_STATES = [
 export type LifecycleState = typeof LIFECYCLE_STATES[number];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SHA256_RE = /^[0-9a-f]{64}$/i;
+const SHA256_RE = /^[0-9a-f]{64}$/;
 const ISO_INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 export interface LifecycleOwnerSnapshot {
@@ -60,7 +60,7 @@ export interface LifecycleSourceSummary {
   completenessReason: string | null;
   completenessRequired: SourceCompleteness;
   freshness: SourceFreshness;
-  freshnessMaxAgeSeconds: number | null;
+  freshnessMaxAgeSeconds: number;
   owner: LifecycleOwnerSnapshot;
   authority: number;
   precedence: number;
@@ -116,15 +116,15 @@ export interface LifecycleProjection {
   summary: string;
   state: LifecycleState;
   priorStates: readonly LifecycleState[];
-  findingId: string | null;
+  findingId: string;
   proposalId: string | null;
   approvalId: string | null;
   executionReceiptId: string | null;
   sourceFactIds: readonly string[];
   sources: readonly LifecycleSourceSummary[];
-  effectiveAt: string | null;
-  asOf: string | null;
-  observedAt: string | null;
+  effectiveAt: string;
+  asOf: string;
+  observedAt: string;
   recordedAt: string;
   freshness: { status: SourceFreshness; maxAgeSeconds: number | null };
   completeness: { status: SourceCompleteness; reason: string | null };
@@ -208,8 +208,8 @@ function nullableIso(value: unknown): string | null | undefined {
   return parsed ?? undefined;
 }
 
-function nonnegativeInteger(value: unknown): number | null {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null;
+function authorityInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 100 ? value : null;
 }
 
 function positiveInteger(value: unknown): number | null {
@@ -217,7 +217,7 @@ function positiveInteger(value: unknown): number | null {
 }
 
 function sha256(value: unknown): string | null {
-  return typeof value === 'string' && SHA256_RE.test(value) ? value.toLowerCase() : null;
+  return typeof value === 'string' && SHA256_RE.test(value) ? value : null;
 }
 
 function sourceKind(value: unknown): SourceKind | null {
@@ -335,6 +335,30 @@ function ordered(times: readonly (string | null)[]): boolean {
   return true;
 }
 
+function derivedFreshness(sources: readonly LifecycleSourceSummary[]): SourceFreshness {
+  if (sources.some((source) => source.freshness === 'stale')) return 'stale';
+  if (sources.some((source) => source.freshness === 'unknown')) return 'unknown';
+  return 'fresh';
+}
+
+function derivedCompleteness(sources: readonly LifecycleSourceSummary[]): SourceCompleteness {
+  if (sources.some((source) => source.completeness === 'unknown')) return 'unknown';
+  if (sources.some((source) => source.completeness === 'partial')) return 'partial';
+  return 'complete';
+}
+
+function derivedMinimumFreshnessAge(sources: readonly LifecycleSourceSummary[]): number {
+  return Math.min(...sources.map((source) => source.freshnessMaxAgeSeconds));
+}
+
+function sameScope(
+  claimScope: string,
+  authority: number,
+  precedence: number,
+): string {
+  return `${claimScope}\u0000${authority}\u0000${precedence}`;
+}
+
 function sourceSummary(value: unknown): LifecycleSourceSummary | null {
   if (!record(value)) return null;
 
@@ -356,8 +380,8 @@ function sourceSummary(value: unknown): LifecycleSourceSummary | null {
   const freshnessMaxAgeSeconds = positiveInteger(value.freshnessMaxAgeSeconds);
   const completenessRequired = sourceCompleteness(value.completenessRequired);
   const owner = ownerSnapshot(value.owner, true);
-  const authority = nonnegativeInteger(value.authority);
-  const precedence = nonnegativeInteger(value.precedence);
+  const authority = authorityInteger(value.authority);
+  const precedence = authorityInteger(value.precedence);
 
   if (contractVersion !== SOURCE_FACT_CONTRACT_VERSION || !id || !kind || !sourceDefinitionId || !claimScope || !label || !reference || !safeSourceReference(reference) || !receiptId || !receiptHash || !effectiveAt || !asOf || !observedAt || !receivedAt || !completeness || !freshness || !completenessRequired || !owner || authority === null || precedence === null) return null;
   const appOwnedOwner = owner.kind === 'app' || owner.kind === 'hotel' || owner.kind === 'company' || owner.kind === 'staxis' || owner.kind === 'human' || owner.kind === 'system';
@@ -590,7 +614,7 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   if (!ordered([asOf, observedAt, recordedAt])) return null;
 
   const sourceFactIds = uniqueUuids(row.source_fact_ids);
-  if (!sourceFactIds) return null;
+  if (!sourceFactIds || sourceFactIds.length === 0 || findingId === null || effectiveAt === null || asOf === null || observedAt === null) return null;
   if (!Array.isArray(row.sources)) return null;
   const sources: LifecycleSourceSummary[] = [];
   const sourceIds = new Set<string>();
@@ -602,6 +626,10 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   }
   if (sourceIds.size !== sourceFactIds.length || sourceFactIds.some((sourceId) => !sourceIds.has(sourceId))) return null;
   if (sources.some((source) => Date.parse(source.receivedAt) > Date.parse(recordedAt))) return null;
+  if (sources.some((source) => Date.parse(source.asOf) > Date.parse(asOf) || Date.parse(source.observedAt) > Date.parse(observedAt))) return null;
+  if (Date.parse(effectiveAt) !== Math.min(...sources.map((source) => Date.parse(source.effectiveAt)))) return null;
+  if (Date.parse(asOf) !== Math.min(...sources.map((source) => Date.parse(source.asOf)))) return null;
+  if (Date.parse(observedAt) !== Math.max(...sources.map((source) => Date.parse(source.observedAt)))) return null;
 
   if (!Array.isArray(row.prior_states)) return null;
   const priorStates: LifecycleState[] = [];
@@ -616,17 +644,17 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   if (!record(row.freshness) || !has(row.freshness, 'status') || !has(row.freshness, 'max_age_seconds')) return null;
   const freshnessStatus = sourceFreshness(row.freshness.status);
   const freshnessMaxAgeSeconds = row.freshness.max_age_seconds === null ? null : positiveInteger(row.freshness.max_age_seconds);
-  if (!freshnessStatus || (freshnessStatus === 'unknown' ? row.freshness.max_age_seconds !== null : freshnessMaxAgeSeconds === null)) return null;
+  if (!freshnessStatus || freshnessMaxAgeSeconds === null || freshnessStatus !== derivedFreshness(sources) || freshnessMaxAgeSeconds !== derivedMinimumFreshnessAge(sources)) return null;
 
   if (!record(row.completeness) || !has(row.completeness, 'status') || !has(row.completeness, 'reason')) return null;
   const completenessStatus = sourceCompleteness(row.completeness.status);
   const completenessReason = nullableText(row.completeness.reason, 500);
-  if (!completenessStatus || completenessReason === undefined || (completenessStatus === 'complete' ? completenessReason !== null : completenessReason === null)) return null;
+  if (!completenessStatus || completenessReason === undefined || completenessStatus !== derivedCompleteness(sources) || (completenessStatus === 'complete' ? completenessReason !== null : completenessReason === null)) return null;
 
   if (!record(row.authority) || !has(row.authority, 'owner') || !has(row.authority, 'level') || !has(row.authority, 'precedence')) return null;
   const authorityOwner = ownerSnapshot(row.authority.owner, true);
-  const authorityLevel = row.authority.level === null ? null : nonnegativeInteger(row.authority.level);
-  const authorityPrecedence = row.authority.precedence === null ? null : nonnegativeInteger(row.authority.precedence);
+  const authorityLevel = row.authority.level === null ? null : authorityInteger(row.authority.level);
+  const authorityPrecedence = row.authority.precedence === null ? null : authorityInteger(row.authority.precedence);
   if (!authorityOwner || authorityLevel === null && row.authority.level !== null || authorityPrecedence === null && row.authority.precedence !== null) return null;
   if ((authorityLevel === null) !== (authorityPrecedence === null)) return null;
   if (!has(row.authority, 'scopes') || !Array.isArray(row.authority.scopes)) return null;
@@ -635,8 +663,8 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   for (const scope of row.authority.scopes) {
     if (!record(scope) || !has(scope, 'claimScope') || !has(scope, 'authority') || !has(scope, 'precedence')) return null;
     const claimScope = text(scope.claimScope, 200);
-    const scopeAuthority = nonnegativeInteger(scope.authority);
-    const scopePrecedence = nonnegativeInteger(scope.precedence);
+    const scopeAuthority = authorityInteger(scope.authority);
+    const scopePrecedence = authorityInteger(scope.precedence);
     if (!claimScope || scopeAuthority === null || scopePrecedence === null || authorityScopeIds.has(claimScope)) return null;
     authorityScopeIds.add(claimScope);
     authorityScopes.push({ claimScope, authority: scopeAuthority, precedence: scopePrecedence });
@@ -644,6 +672,9 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   if (authorityScopes.length === 0 && (authorityLevel !== null || authorityPrecedence !== null)) return null;
   if (authorityScopes.length === 1 && (authorityLevel !== authorityScopes[0].authority || authorityPrecedence !== authorityScopes[0].precedence)) return null;
   if (authorityScopes.length > 1 && (authorityLevel !== null || authorityPrecedence !== null)) return null;
+  const sourceScopes = new Set(sources.map((source) => sameScope(source.claimScope, source.authority, source.precedence)));
+  const declaredScopes = new Set(authorityScopes.map((scope) => sameScope(scope.claimScope, scope.authority, scope.precedence)));
+  if (sourceScopes.size !== declaredScopes.size || [...sourceScopes].some((scope) => !declaredScopes.has(scope))) return null;
 
   if (!has(row, 'action')) return null;
   const actionRaw = row.action;
@@ -657,11 +688,13 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
   if (outcome === undefined) return null;
 
   if (state === 'observed') {
-    if (action !== null || outcome !== null || outcomeEvidenceId !== null || executionReceiptId !== null) return null;
+    if (proposalId !== null || approvalId !== null || executionReceiptId !== null || domainWorkItem !== null || action !== null || outcome !== null || outcomeEvidenceId !== null) return null;
   } else {
-    if (!action) return null;
+    if (!action || proposalId === null || action.id !== proposalId) return null;
   }
-  if ((state === 'proposed' || state === 'approved') && (executionReceiptId !== null || outcome !== null || outcomeEvidenceId !== null)) return null;
+  if (state === 'proposed' && (approvalId !== null || executionReceiptId !== null || domainWorkItem !== null || outcome !== null || outcomeEvidenceId !== null || action?.targetId !== null || action?.outcome.state !== 'pending')) return null;
+  if (state === 'approved' && (approvalId === null || executionReceiptId !== null || domainWorkItem !== null || outcome !== null || outcomeEvidenceId !== null || action?.targetId !== null || action?.outcome.state !== 'pending')) return null;
+  if ((state === 'executed' || state === 'outcome_verified' || state === 'not_observable' || state === 'unverifiable') && (approvalId === null || executionReceiptId === null || domainWorkItem === null || action?.targetId === null || action?.targetId !== domainWorkItem.id)) return null;
   if (state === 'executed' && outcomeEvidenceId !== null) return null;
   if (state === 'proposed' && action?.approval.state !== 'required') return null;
   if (state === 'approved' && action && action.approval.state !== 'approved' && action.approval.state !== 'not_required') return null;
