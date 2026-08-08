@@ -37,6 +37,7 @@ export interface MessagePaneProps {
   onLoadOlder: () => void;
   online: Set<string>;
   memberCount: number | null;
+  showHotelContext?: boolean;
   L: L;
   activeThreadId: string | null;
   activePanel: RightPanel;
@@ -78,6 +79,7 @@ export function MessagePane(props: MessagePaneProps) {
         <div style={{ minWidth: 0 }}>
           <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15.5, color: T.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</div>
           <div style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim, whiteSpace: 'nowrap' }}>
+            {props.showHotelContext && c.propertyName && <span>{'Hotel · '}{c.propertyName}{' · '}</span>}
             {isAnnouncement ? (me.isManager ? 'Broadcast to everyone' : 'Read-only') : headerSub}
           </div>
         </div>
@@ -174,8 +176,8 @@ function DayDivider({ label }: { label: string }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // RIGHT PANELS — Thread · Pinned · Members
 // ─────────────────────────────────────────────────────────────────────────────
-export function ThreadPanel({ pid, conversation: c, parent, L, onClose, onReload }: {
-  pid: string; conversation: ConversationDTO; parent: MessageDTO; L: L; onClose: () => void; onReload: () => void | Promise<void>;
+export function ThreadPanel({ pid, conversation: c, parent, L, onClose, onReload, showHotelContext = false }: {
+  pid: string; conversation: ConversationDTO; parent: MessageDTO; L: L; onClose: () => void; onReload: () => void | Promise<void>; showHotelContext?: boolean;
 }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
   const [text, setText] = React.useState('');
@@ -211,7 +213,7 @@ export function ThreadPanel({ pid, conversation: c, parent, L, onClose, onReload
     <div ref={ref} className="comms-right-panel" style={{ width: 380, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
       <div style={{ padding: '0 14px', height: 56, borderBottom: `1px solid ${T.hair}`, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{'Thread'}</span>
-        <span style={{ fontFamily: SANS, fontSize: 12.5, color: T.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.kind === 'dm' ? c.title : '#' + c.title}</span>
+        <span style={{ fontFamily: SANS, fontSize: 12.5, color: T.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.kind === 'dm' ? c.title : '#' + c.title}{showHotelContext && c.propertyName ? ` · ${c.propertyName}` : ''}</span>
         <div style={{ flex: 1 }} />
         <button onClick={onClose} aria-label={'Close thread'} style={paneIcon}><X size={17} /></button>
       </div>
@@ -260,7 +262,7 @@ function ThreadMessage({ m, dept, L }: { m: MessageDTO; dept?: CommsDept; L: L }
   );
 }
 
-export function PinnedPanel({ pid, conversation: c, L, onClose }: { pid: string; conversation: ConversationDTO; L: L; onClose: () => void }) {
+export function PinnedPanel({ pid, conversation: c, L, onClose, showHotelContext = false }: { pid: string; conversation: ConversationDTO; L: L; onClose: () => void; showHotelContext?: boolean }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
   const { data, loading, error, reload } = useCommsResource<{ pinned: MessageDTO[] }>(
     `/api/comms/pin?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(c.id)}`,
@@ -272,6 +274,7 @@ export function PinnedPanel({ pid, conversation: c, L, onClose }: { pid: string;
     <div ref={ref} className="comms-right-panel" style={{ width: 380, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
       <div style={{ padding: '0 14px', height: 56, borderBottom: `1px solid ${T.hair}`, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <Pin size={16} /><span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{'Pinned'}</span>
+        {showHotelContext && c.propertyName && <span style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.propertyName}</span>}
         <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>{data ? pins.length : '—'}</span>
         <div style={{ flex: 1 }} /><button onClick={onClose} aria-label={'Close pinned messages'} style={paneIcon}><X size={17} /></button>
       </div>
@@ -295,8 +298,8 @@ export function PinnedPanel({ pid, conversation: c, L, onClose }: { pid: string;
   );
 }
 
-export function MembersPanel({ pid, conversation: c, online, L, onClose, onMessage }: {
-  pid: string; conversation: ConversationDTO; online: Set<string>; L: L; onClose: () => void; onMessage: (staffId: string) => void;
+export function MembersPanel({ pid, conversation: c, online, L, onClose, onMessage, showHotelContext = false }: {
+  pid: string; conversation: ConversationDTO; online: Set<string>; L: L; onClose: () => void; onMessage: (staffId: string) => void; showHotelContext?: boolean;
 }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
   const { data, loading, error, reload } = useCommsResource<{ members: MemberDTO[]; memberCount: number }>(
@@ -309,6 +312,7 @@ export function MembersPanel({ pid, conversation: c, online, L, onClose, onMessa
     <div ref={ref} className="comms-right-panel" style={{ width: 320, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
       <div style={{ padding: '0 14px', height: 56, borderBottom: `1px solid ${T.hair}`, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <Users size={16} /><span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{'Members'}</span>
+        {showHotelContext && c.propertyName && <span style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.propertyName}</span>}
         <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>{data ? members.length : '—'}</span>
         <div style={{ flex: 1 }} /><button onClick={onClose} aria-label={'Close members'} style={paneIcon}><X size={17} /></button>
       </div>

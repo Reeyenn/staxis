@@ -23,8 +23,8 @@ import {
 // ─────────────────────────────────────────────────────────────────────────────
 // SEARCH PALETTE
 // ─────────────────────────────────────────────────────────────────────────────
-export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
-  pid: string; L: L; onClose: () => void; onJump: (conversationId: string) => void; onOpenDm: (staffId: string) => void;
+export function SearchPalette({ pid, hotelName, L, onClose, onJump, onOpenDm }: {
+  pid: string; hotelName?: string; L: L; onClose: () => void; onJump: (conversationId: string) => void; onOpenDm: (staffId: string) => void;
 }) {
   const [q, setQ] = React.useState('');
   const [hits, setHits] = React.useState<SearchHitDTO[]>([]);
@@ -67,6 +67,7 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
           <span style={{ color: T.dim, display: 'flex' }}><Search size={18} /></span>
           <input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder={'Search messages, channels and people…'}
             style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 15, color: T.ink }} />
+          {hotelName && <span style={{ maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: MONO, fontSize: 9.5, color: T.dim }}>{`Hotel · ${hotelName}`}</span>}
           <button onClick={onClose} aria-label={'Close search'} style={{ minWidth: 44, minHeight: 44, fontFamily: MONO, fontSize: 10, letterSpacing: '.08em', color: T.dim, border: `1px solid ${T.hair}`, borderRadius: 6, padding: '3px 7px', background: 'transparent', cursor: 'pointer' }}>ESC</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0 12px' }}>
@@ -109,17 +110,17 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
 // ─────────────────────────────────────────────────────────────────────────────
 // NEW MESSAGE (DM picker)
 // ─────────────────────────────────────────────────────────────────────────────
-export function NewMessageModal({ staff, L, onPick, onClose }: { staff: StaffLite[]; L: L; onPick: (staffId: string) => void; onClose: () => void }) {
+export function NewMessageModal({ staff, hotelName, L, onPick, onClose }: { staff: StaffLite[]; hotelName?: string; L: L; onPick: (staffId: string) => void; onClose: () => void }) {
   const [q, setQ] = React.useState('');
   const filtered = staff.filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
   return (
-    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)"
+    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)" escToClose
       cardStyle={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '92%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.2)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hair}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontWeight: 700, fontFamily: SANS, fontSize: 15 }}>{'New message'}</span>
-          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
+          <span style={{ fontWeight: 700, fontFamily: SANS, fontSize: 15 }}>{'New message'}{hotelName ? <span style={{ fontWeight: 500, color: T.dim, fontSize: 11.5 }}>{` · ${hotelName}`}</span> : null}</span>
+          <button onClick={onClose} aria-label={'Close new message'} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} aria-hidden="true" /></button>
         </div>
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={'Search staff…'} style={{ margin: 14, padding: '10px 12px', border: `1px solid ${T.hair}`, borderRadius: 10, fontFamily: SANS, fontSize: 14, outline: 'none' }} />
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={'Search staff…'} style={{ margin: 14, minHeight: 44, padding: '10px 12px', border: `1px solid ${T.hair}`, borderRadius: 10, fontFamily: SANS, fontSize: 16, outline: 'none' }} />
         <div style={{ overflowY: 'auto' }}>
           {filtered.map((s) => (
             <button key={s.id} onClick={() => onPick(s.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '10px 18px', background: 'transparent', border: 'none', borderBottom: `1px solid ${T.hairSoft}`, cursor: 'pointer', fontFamily: SANS, fontSize: 14 }}>

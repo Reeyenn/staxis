@@ -25,9 +25,22 @@ import { Search, ListTodo, Megaphone, Plus, ChevronLeft, AlertCircle, Loader2, R
 import { useProperty } from '@/contexts/PropertyContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO } from '@/lib/comms/types';
-import type { WorklistItem } from '@/lib/worklist/types';
-import { useCommsResource } from './comms-data';
 import type { BootstrapData, ViewMode, RightPanel, L as LType } from './comms-types-fe';
+import {
+  ALL_HOTELS_FILTER,
+  conversationsWithHotelContext,
+  hotelConversationKey,
+  hotelRefreshPropertyIds,
+  hotelScopeOptions,
+  resolveHotelConversationForAction,
+  resolveHotelActionPropertyId,
+  shouldShowHotelContext,
+  sortHotelConversations,
+  visibleHotelConversations,
+  type HotelBootstrap,
+  type HotelConversation,
+  type HotelScopeOption,
+} from './comms-hotels';
 import { T, SANS, MONO, deptColorDark, Avatar, Presence } from './comms-ui';
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
 import { SearchPalette, NewMessageModal } from './CommsOverlays';
@@ -103,23 +116,145 @@ export function createSingleFlightRequest<T>(request: () => Promise<T>): (ensure
 }
 
 export function CommsApp() {
-  const { activePropertyId } = useProperty();
+  const { activePropertyId, activeProperty, activeScope, properties } = useProperty();
+  const hotels = React.useMemo(() => {
+    const scoped = hotelScopeOptions({ activePropertyId, activeScope, properties });
+    // During the brief property-context handoff, the active id can be known
+    // before its stamped property row is exposed. Keep the existing hotel
+    // request alive with a neutral label; the pid is still reauthorized by the
+    // bootstrap route before it can appear in the UI.
+    if (scoped.length === 0 && activePropertyId && activeScope.kind === 'hotel') {
+      return [{ propertyId: activePropertyId, propertyName: activeProperty?.name ?? 'Hotel' }];
+    }
+    return scoped;
+  }, [activeProperty, activePropertyId, activeScope, properties]);
   // A hotel switch is a resource-boundary change, not an ordinary refresh.
   // Remount the workspace so no conversations, messages, badges, or modal
   // state from the previous hotel can remain while the next request settles.
-  return <CommsPropertyApp key={activePropertyId ?? 'no-property'} pid={activePropertyId} />;
+  const scopeKey = activeScope.kind === 'company'
+    ? `company:${activeScope.scope.organizationId}:${activeScope.scope.id}:${activeScope.scope.propertyIds.join(',')}`
+    : activeScope.kind === 'hotel'
+      ? `hotel:${activeScope.propertyId}`
+      : `unresolved:${activeScope.reason}`;
+  return <CommsPropertyApp key={`${activePropertyId ?? 'no-property'}:${scopeKey}`} pid={activePropertyId} hotels={hotels} />;
 }
 
-function CommsPropertyApp({ pid }: { pid: string | null }) {
+interface HotelBootstrapFailure {
+  propertyId: string;
+  propertyName: string;
+  error: string;
+  unauthorized: boolean;
+}
+
+/**
+ * Compose the existing hotel-scoped bootstrap reads without creating a new
+ * cross-property API. Every pid is independently authorized by commsContext;
+ * a denied hotel is omitted, while a transient failure remains retryable.
+ * Polling follows the selected filter so the normal one-hotel view does not
+ * build an N-hotel request train.
+ */
+function useHotelBootstraps(hotels: HotelScopeOption[], filter: string, activePid: string | null) {
+  const hotelIdsKey = hotels.map((hotel) => hotel.propertyId).join(',');
+  const hotelsById = React.useMemo(() => new Map(hotels.map((hotel) => [hotel.propertyId, hotel] as const)), [hotels]);
+  const [records, setRecords] = React.useState<HotelBootstrap[]>([]);
+  const [failures, setFailures] = React.useState<HotelBootstrapFailure[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const generationRef = React.useRef(0);
+
+  const load = React.useCallback(async (ids: string[], preserve = false): Promise<void> => {
+    const requested = Array.from(new Set(ids)).filter((id) => hotelsById.has(id));
+    const ticket = ++generationRef.current;
+    if (!preserve) {
+      setRecords([]);
+      setFailures([]);
+    }
+    if (requested.length === 0) {
+      setLoading(false);
+      if (!preserve) setError(null);
+      return;
+    }
+    setLoading(true);
+    const results = await Promise.all(requested.map(async (propertyId) => {
+      const hotel = hotelsById.get(propertyId)!;
+      const result = await apiGet<BootstrapData>(`/api/comms/bootstrap?pid=${encodeURIComponent(propertyId)}`);
+      return { propertyId, propertyName: hotel.propertyName, result };
+    }));
+    if (generationRef.current !== ticket) return;
+
+    const successful = results.filter((item): item is typeof item & { result: { ok: true; data: BootstrapData } } => item.result.ok && !!item.result.data)
+      .map((item) => ({ propertyId: item.propertyId, propertyName: item.propertyName, data: item.result.data }));
+    const failed = results.filter((item) => !item.result.ok || !item.result.data)
+      .map((item) => ({
+        propertyId: item.propertyId,
+        propertyName: item.propertyName,
+        error: item.result.error || 'Could not load Messages.',
+        // A current 403/404 means this private hotel is no longer in the
+        // caller's Messages standing. Do not retain it as a selectable stale
+        // option; transient failures keep the last-good authorized snapshot.
+        unauthorized: item.result.status === 403 || item.result.status === 404,
+      }));
+
+    setRecords((current) => {
+      const deniedIds = new Set(failed.filter((item) => item.unauthorized).map((item) => item.propertyId));
+      const next = new Map(preserve ? current.filter((item) => !deniedIds.has(item.propertyId)).map((item) => [item.propertyId, item] as const) : []);
+      for (const item of successful) next.set(item.propertyId, item);
+      return Array.from(next.values());
+    });
+    setFailures((current) => {
+      const next = new Map(preserve ? current.map((item) => [item.propertyId, item] as const) : []);
+      for (const item of failed) next.set(item.propertyId, item);
+      for (const item of successful) next.delete(item.propertyId);
+      return Array.from(next.values());
+    });
+    setError(successful.length === 0 ? (failed[0]?.error ?? 'Messages could not load.') : null);
+    setLoading(false);
+  }, [hotelsById]);
+
+  React.useEffect(() => {
+    void load(hotels.map((hotel) => hotel.propertyId));
+    return () => { generationRef.current += 1; };
+  }, [hotelIdsKey, hotels, load]);
+
+  const refreshIds = React.useMemo(() => {
+    return hotelRefreshPropertyIds({
+      filter,
+      activePropertyId: activePid,
+      candidatePropertyIds: Array.from(hotelsById.keys()),
+      successfulPropertyIds: records.map((record) => record.propertyId),
+      failures,
+    });
+  }, [activePid, failures, filter, hotelsById, records]);
+  const refreshIdsKey = refreshIds.join(',');
+
+  React.useEffect(() => {
+    if (refreshIds.length === 0) return;
+    const interval = window.setInterval(() => {
+      if (!document.hidden) void load(refreshIds, true);
+    }, 8000);
+    return () => window.clearInterval(interval);
+  }, [load, refreshIds, refreshIdsKey]);
+
+  const reload = React.useCallback(() => load(refreshIds, true), [load, refreshIds]);
+  const canRetry = refreshIds.length > 0;
+
+  return { records, failures, loading, error, reload, canRetry };
+}
+
+function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelScopeOption[] }) {
   const L = React.useCallback<LType>((english) => english, []);
 
   const [selId, setSelId] = React.useState<string | null>(null);
+  const [selPropertyId, setSelPropertyId] = React.useState<string | null>(pid);
+  const [hotelFilter, setHotelFilter] = React.useState<string>(pid ?? ALL_HOTELS_FILTER);
   const [messages, setMessages] = React.useState<MessageDTO[]>([]);
   const [mode, setMode] = React.useState<ViewMode>('chats');
   const [threadParent, setThreadParent] = React.useState<MessageDTO | null>(null);
   const [panel, setPanel] = React.useState<RightPanel>(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const [searchPropertyId, setSearchPropertyId] = React.useState<string | null>(null);
   const [showNew, setShowNew] = React.useState(false);
+  const [newMessagePropertyId, setNewMessagePropertyId] = React.useState<string | null>(null);
   const [memberCount, setMemberCount] = React.useState<number | null>(null);
   const [mobileDetail, setMobileDetail] = React.useState(false);
   const [messagesLoading, setMessagesLoading] = React.useState(false);
@@ -185,27 +320,79 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   }, []);
 
   // ── Data ──────────────────────────────────────────────────────────────────
-  // Bootstrap (sidebar + me + staff): 8s poll, last-good held through failed
-  // polls. CommsApp's property-keyed boundary clears it on hotel switches.
-  const { data: boot, loading: bootLoading, error: bootError, reload: loadBoot } = useCommsResource<BootstrapData>(
-    `/api/comms/bootstrap?pid=${encodeURIComponent(pid ?? '')}`,
-    { pollMs: 8000, keepDataOnError: true, enabled: !!pid },
+  // Each bootstrap is independently hotel-authorized. The successful set is
+  // the only source for All hotels/filter choices; denied hotels never appear.
+  const { records: hotelBootstraps, failures: hotelBootstrapFailures, loading: bootLoading, error: bootError, reload: loadBoot, canRetry } = useHotelBootstraps(hotels, hotelFilter, pid);
+  const hotelConversations = React.useMemo<HotelConversation[]>(
+    () => sortHotelConversations(hotelBootstraps.flatMap(conversationsWithHotelContext)),
+    [hotelBootstraps],
   );
-  const selConvo = boot?.conversations.find((c) => c.id === selId) ?? null;
+  const visibleConversations = React.useMemo(
+    () => visibleHotelConversations(hotelConversations, hotelFilter),
+    [hotelConversations, hotelFilter],
+  );
+  const selectedKey = selPropertyId && selId ? hotelConversationKey(selPropertyId, selId) : null;
+  const selConvo = hotelConversations.find((conversation) => selectedKey === hotelConversationKey(conversation.propertyId, conversation.id)) ?? null;
+  const fallbackPropertyId = hotelFilter === ALL_HOTELS_FILTER ? hotelBootstraps[0]?.propertyId : hotelFilter || pid;
+  const selectedBootstrap = selConvo
+    ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === selConvo.propertyId) ?? null
+    : hotelBootstraps.find((bootstrap) => bootstrap.propertyId === fallbackPropertyId) ?? null;
+  const boot = selectedBootstrap?.data ?? null;
+  const selectedPid = selConvo?.propertyId ?? selectedBootstrap?.propertyId ?? fallbackPropertyId ?? null;
   const online = React.useMemo(() => new Set(boot?.onlineStaffIds ?? []), [boot?.onlineStaffIds]);
+  const onlineByProperty = React.useMemo(
+    () => new Map(hotelBootstraps.map((bootstrap) => [bootstrap.propertyId, new Set(bootstrap.data.onlineStaffIds)] as const)),
+    [hotelBootstraps],
+  );
+  React.useEffect(() => {
+    const deniedSelection = selPropertyId
+      && hotelBootstrapFailures.some((failure) => failure.propertyId === selPropertyId && failure.unauthorized);
+    if (deniedSelection) {
+      setSelPropertyId(null); setSelId(null); setThreadParent(null); setPanel(null); setMobileDetail(false);
+    }
+    if (hotelFilter !== ALL_HOTELS_FILTER && hotelFilter !== pid
+      && !hotelBootstraps.some((bootstrap) => bootstrap.propertyId === hotelFilter)
+      && !bootLoading) {
+      setHotelFilter(pid ?? ALL_HOTELS_FILTER);
+    }
+    if (hotelFilter === pid && pid && !hotelBootstraps.some((bootstrap) => bootstrap.propertyId === pid)
+      && !bootLoading && hotelBootstraps.length > 0) {
+      setHotelFilter(hotelBootstraps.length > 1 ? ALL_HOTELS_FILTER : hotelBootstraps[0].propertyId);
+    }
+  }, [bootLoading, hotelBootstrapFailures, hotelBootstraps, hotelFilter, pid, selPropertyId]);
+  React.useEffect(() => {
+    if (bootLoading || !selId || !selPropertyId) return;
+    const selectedExists = hotelConversations.some((conversation) =>
+      conversation.propertyId === selPropertyId && conversation.id === selId,
+    );
+    const selectedVisible = hotelFilter === ALL_HOTELS_FILTER || hotelFilter === selPropertyId;
+    if (selectedExists && selectedVisible) return;
+    // A membership/visibility change can remove one conversation while the
+    // hotel bootstrap still succeeds. Drop the composite selection and every
+    // dependent message cursor before another poll can commit stale content.
+    threadRequestRef.current += 1;
+    threadLoadRef.current = null;
+    olderLoadRef.current = null;
+    olderScrollAnchorRef.current = null;
+    messagesCursorRef.current = null;
+    olderHistoryRef.current = false;
+    setSelPropertyId(null); setSelId(null); setMessages([]); setMessagesError(null);
+    setMessagesHasOlder(false); setMessagesOlderKnown(false); setMessagesOlderLoading(false); setMessagesOlderError(null);
+    setThreadParent(null); setPanel(null); setMobileDetail(false);
+  }, [bootLoading, hotelConversations, hotelFilter, selId, selPropertyId]);
   messagesHasOlderRef.current = messagesHasOlder;
 
   // Messages stay hand-rolled: switching conversations must BLANK the pane
   // (not hold the previous thread's messages), and every successful fetch —
-  // polls included — re-pins the scroll to the bottom. Neither survives
-  // useCommsResource's silent keep-last-good source switches.
+  // polls included — re-pins the scroll to the bottom. Neither survives a
+  // hotel/conversation source switch.
   const loadThread = React.useCallback((showLoading = false, ensureFresh = false): Promise<void> => {
-    if (!pid || !selId) return Promise.resolve();
+    if (!selectedPid || !selId) return Promise.resolve();
     if (showLoading) setMessagesLoading(true);
-    const scope = `${pid}\u0000${selId}`;
+    const scope = `${selectedPid}\u0000${selId}`;
     let loader = threadLoadRef.current;
     if (!loader || loader.scope !== scope) {
-      const url = `/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}`;
+      const url = `/api/comms/messages?pid=${encodeURIComponent(selectedPid)}&conversationId=${encodeURIComponent(selId)}`;
       const token = {};
       const nextLoader = {
         scope,
@@ -259,11 +446,11 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
       void pending.then(finishLoading, finishLoading);
     }
     return pending;
-  }, [pid, selId]);
+  }, [selectedPid, selId]);
 
   const loadOlderMessages = React.useCallback((): Promise<void> => {
-    if (!pid || !selId || !messagesHasOlderRef.current) return Promise.resolve();
-    const scope = `${pid}\u0000${selId}`;
+    if (!selectedPid || !selId || !messagesHasOlderRef.current) return Promise.resolve();
+    const scope = `${selectedPid}\u0000${selId}`;
     const cursor = messagesCursorRef.current;
     if (!cursor) {
       setMessagesHasOlder(false);
@@ -283,7 +470,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     let pending!: Promise<void>;
     pending = (async () => {
       try {
-        const url = `/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}&before=${encodeURIComponent(cursor.before)}&beforeId=${encodeURIComponent(cursor.beforeId)}`;
+        const url = `/api/comms/messages?pid=${encodeURIComponent(selectedPid)}&conversationId=${encodeURIComponent(selId)}&before=${encodeURIComponent(cursor.before)}&beforeId=${encodeURIComponent(cursor.beforeId)}`;
         const r = await apiGet<MessagesPageDTO>(url);
         if (threadLoadRef.current?.token !== token || threadLoadRef.current?.scope !== scope) return;
         if (!r.ok || !r.data) {
@@ -313,7 +500,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     })();
     olderLoadRef.current = { scope, cursor, promise: pending };
     return pending;
-  }, [pid, selId]);
+  }, [selectedPid, selId]);
 
   React.useLayoutEffect(() => {
     const anchor = olderScrollAnchorRef.current;
@@ -352,42 +539,81 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   // Member count for the selected conversation header.
   React.useEffect(() => {
     setMemberCount(null);
-    if (!pid || !selId || !selConvo || selConvo.kind === 'dm') return;
+    if (!selectedPid || !selId || !selConvo || selConvo.kind === 'dm') return;
     let live = true;
     void (async () => {
-      const r = await apiGet<{ memberCount: number }>(`/api/comms/members?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}`);
+      const r = await apiGet<{ memberCount: number }>(`/api/comms/members?pid=${encodeURIComponent(selectedPid)}&conversationId=${encodeURIComponent(selId)}`);
       if (live && r.ok && r.data) setMemberCount(r.data.memberCount);
     })();
     return () => { live = false; };
-  }, [pid, selId, selConvo]);
+  }, [selectedPid, selId, selConvo]);
 
   // ── Actions ─────────────────────────────────────────────────────────────────
-  const selectConversation = (id: string) => { setSelId(id); setMode('chats'); setThreadParent(null); setPanel(null); setMobileDetail(true); };
+  const selectConversation = (id: string, propertyId: string) => {
+    setSelPropertyId(propertyId);
+    setSelId(id);
+    setHotelFilter((current) => current === ALL_HOTELS_FILTER ? current : propertyId);
+    setMode('chats'); setThreadParent(null); setPanel(null); setMobileDetail(true);
+  };
   const switchMode = (m: ViewMode) => { setMode(m); setMobileDetail(true); if (m !== 'chats') { setThreadParent(null); setPanel(null); } };
-  const jump = (id: string) => { selectConversation(id); setSearchOpen(false); };
   const openThread = (m: MessageDTO) => { setPanel(null); setThreadParent((cur) => (cur?.id === m.id ? null : m)); };
   const togglePanel = (p: Exclude<RightPanel, null>) => { setThreadParent(null); setPanel((cur) => (cur === p ? null : p)); };
   const showMobileList = () => { setMobileDetail(false); setThreadParent(null); setPanel(null); };
   const actionFailed = (message: string) => setMutationError(message);
+  const closeSearch = () => { setSearchOpen(false); setSearchPropertyId(null); };
+  const closeNewMessage = () => { setShowNew(false); setNewMessagePropertyId(null); };
+  const jump = (id: string, propertyId: string | null) => { if (propertyId) selectConversation(id, propertyId); closeSearch(); };
+  const beginSearch = () => {
+    const propertyId = resolveHotelActionPropertyId({
+      selectedPropertyId: selConvo?.propertyId ?? null,
+      hotelFilter,
+      availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+    });
+    if (!propertyId) {
+      actionFailed('Choose a hotel before searching Messages.');
+      return;
+    }
+    setMutationError(null);
+    setSearchPropertyId(propertyId);
+    setSearchOpen(true);
+  };
+  const beginNewMessage = () => {
+    const propertyId = resolveHotelActionPropertyId({
+      selectedPropertyId: selConvo?.propertyId ?? null,
+      hotelFilter,
+      availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+    });
+    if (!propertyId) {
+      actionFailed('Choose a hotel before starting a message.');
+      return;
+    }
+    if (!hotelBootstraps.some((bootstrap) => bootstrap.propertyId === propertyId)) {
+      actionFailed('That hotel is not ready for Messages yet. Try again.');
+      return;
+    }
+    setMutationError(null);
+    setNewMessagePropertyId(propertyId);
+    setShowNew(true);
+  };
 
   const reactToggle = async (m: MessageDTO) => {
-    if (!pid) return;
+    if (!selectedPid) return;
     setMutationError(null);
-    const r = await apiPost('/api/comms/react', { pid, messageId: m.id });
+    const r = await apiPost('/api/comms/react', { pid: selectedPid, messageId: m.id });
     if (!r.ok) { actionFailed('Could not update the acknowledgement. Please try again.'); return; }
     await loadThread(false, true);
   };
   const pinToggle = async (m: MessageDTO) => {
-    if (!pid) return;
+    if (!selectedPid) return;
     setMutationError(null);
-    const r = await apiPost('/api/comms/pin', { pid, messageId: m.id, pinned: !m.pinned });
+    const r = await apiPost('/api/comms/pin', { pid: selectedPid, messageId: m.id, pinned: !m.pinned });
     if (!r.ok) { actionFailed('Could not update the pinned message. Please try again.'); return; }
     await loadThread(false, true);
   };
   const turnIntoTask = async (m: MessageDTO) => {
-    if (!pid) return;
+    if (!selectedPid) return;
     setMutationError(null);
-    const r = await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || 'Message task', sourceMessageId: m.id });
+    const r = await apiPost('/api/comms/tasks', { pid: selectedPid, title: (m.originalBody || m.body).slice(0, 200) || 'Message task', sourceMessageId: m.id });
     if (!r.ok) { actionFailed('Could not turn this message into a task. Please try again.'); return; }
     // The to-do it just created lives on the Staxis list now, so this used to
     // switch to a nav item that no longer exists. Say where it went rather than
@@ -396,12 +622,21 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     // the more annoying of the two wrong answers.
     setTaskNotice('Added to your Staxis list.');
   };
-  const openDm = async (staffId: string) => {
-    if (!pid) return;
+  const openDm = async (staffId: string, interactionPropertyId?: string | null) => {
+    const propertyId = interactionPropertyId
+      ?? resolveHotelActionPropertyId({
+        selectedPropertyId: selConvo?.propertyId ?? null,
+        hotelFilter,
+        availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+      });
+    if (!propertyId) {
+      actionFailed('Choose a hotel before starting a message.');
+      return;
+    }
     setMutationError(null);
-    const r = await apiPost<{ conversationId: string }>('/api/comms/dm', { pid, otherStaffId: staffId });
+    const r = await apiPost<{ conversationId: string }>('/api/comms/dm', { pid: propertyId, otherStaffId: staffId });
     if (!r.ok || !r.data?.conversationId) { actionFailed('Could not start the direct message. Please try again.'); return; }
-    await loadBoot(); selectConversation(r.data.conversationId); setShowNew(false); setSearchOpen(false);
+    await loadBoot(); selectConversation(r.data.conversationId, propertyId); closeNewMessage(); closeSearch();
   };
 
   if (!mounted) {
@@ -409,36 +644,69 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     // Same card frame as the real workspace so hydration doesn't flash.
     return <div style={{ flex: 1, minHeight: 0, background: T.bg, borderRadius: 18, border: '1px solid rgba(31,35,28,.08)' }} />;
   }
-  if (!pid) {
+  if (!pid && hotels.length === 0) {
     return <div style={{ padding: 40, fontFamily: SANS, color: T.dim }}>{'Select a property to use Communications.'}</div>;
   }
   if (!boot) {
+    const noEligibleHotels = !bootLoading
+      && !canRetry
+      && hotelBootstrapFailures.length > 0
+      && hotelBootstrapFailures.every((failure) => failure.unauthorized);
     return (
       <div className="comms-shell" style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative', borderRadius: 18, border: '1px solid rgba(31,35,28,.08)', boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)', overflow: 'hidden' }}>
         <ResourceState
-          loading={bootLoading || !bootError}
-          title={bootLoading || !bootError ? 'Loading Communications…' : 'Communications could not load'}
-          detail={bootLoading || !bootError ? 'Getting conversations and staff for this property.' : 'Check your connection, then try again. Your data has not been changed.'}
+          loading={bootLoading || (!bootError && !noEligibleHotels)}
+          title={noEligibleHotels ? 'Messages is not available' : bootLoading || !bootError ? 'Loading Communications…' : 'Communications could not load'}
+          detail={noEligibleHotels ? 'Messages is not available for the hotels in this scope.' : bootLoading || !bootError ? 'Getting conversations and staff for this property.' : 'Check your connection, then try again. Your data has not been changed.'}
           retryLabel={'Try again'}
+          canRetry={canRetry}
           onRetry={() => void loadBoot()}
         />
       </div>
     );
   }
 
-  const conversations = boot?.conversations ?? [];
+  const conversations = visibleConversations;
   const announce = conversations.filter((c) => c.kind === 'announcement');
   const channels = conversations.filter((c) => c.kind === 'channel');
   const dms = conversations.filter((c) => c.kind === 'dm');
-  const onShiftCount = (boot?.onlineStaffIds ?? []).filter((id) => id !== boot?.me.staffId).length;
+  const onShiftCount = hotelFilter === ALL_HOTELS_FILTER
+    ? hotelBootstraps.reduce((sum, bootstrap) => sum + bootstrap.data.onlineStaffIds.filter((id) => id !== bootstrap.data.me.staffId).length, 0)
+    : (boot?.onlineStaffIds ?? []).filter((id) => id !== boot?.me.staffId).length;
+  const hotelOptions = hotelBootstraps.slice().sort((a, b) => a.propertyName.localeCompare(b.propertyName));
+  const showHotelFilter = hotelOptions.length > 1;
+  const showHotelContext = shouldShowHotelContext({
+    hotelFilter,
+    availablePropertyIds: hotelOptions.map((hotel) => hotel.propertyId),
+  });
+  const selectedHotelFailure = hotelBootstrapFailures.find((failure) => !failure.unauthorized && failure.propertyId === (hotelFilter === ALL_HOTELS_FILTER ? pid : hotelFilter));
+  const beginAnnouncement = () => {
+    const actionInput = {
+      selectedPropertyId: selConvo?.propertyId ?? null,
+      hotelFilter,
+      availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+    };
+    const propertyId = resolveHotelActionPropertyId(actionInput);
+    if (!propertyId) {
+      actionFailed('Choose a hotel before posting an announcement.');
+      return;
+    }
+    const feed = resolveHotelConversationForAction(announce, actionInput);
+    if (!feed) {
+      actionFailed('No announcement feed is available for that hotel.');
+      return;
+    }
+    setMutationError(null);
+    selectConversation(feed.id, feed.propertyId);
+  };
 
   const right = mode === 'chats'
     ? (threadParent && selConvo
-        ? <ThreadPanel key={`${selConvo.id}:${threadParent.id}`} pid={pid} conversation={selConvo} parent={threadParent} L={L} onClose={() => setThreadParent(null)} onReload={() => loadThread(false, true)} />
+        ? <ThreadPanel key={`${selConvo.propertyId}:${selConvo.id}:${threadParent.id}`} pid={selectedPid!} conversation={selConvo} parent={threadParent} showHotelContext={showHotelContext} L={L} onClose={() => setThreadParent(null)} onReload={() => loadThread(false, true)} />
         : panel === 'pinned' && selConvo
-        ? <PinnedPanel pid={pid} conversation={selConvo} L={L} onClose={() => setPanel(null)} />
+        ? <PinnedPanel pid={selectedPid!} conversation={selConvo} showHotelContext={showHotelContext} L={L} onClose={() => setPanel(null)} />
         : panel === 'members' && selConvo
-        ? <MembersPanel pid={pid} conversation={selConvo} online={online} L={L} onClose={() => setPanel(null)} onMessage={openDm} />
+        ? <MembersPanel pid={selectedPid!} conversation={selConvo} showHotelContext={showHotelContext} online={online} L={L} onClose={() => setPanel(null)} onMessage={openDm} />
         : null)
     : null;
 
@@ -454,10 +722,30 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
           <div style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim, display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
             <Presence on={onShiftCount > 0} size={7} /> {`${onShiftCount} on shift`}
           </div>
+          {showHotelFilter && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 10, fontFamily: SANS, fontSize: 12, color: T.dim }}>
+              <span>{'Hotel'}</span>
+              <select
+                aria-label={'Filter messages by hotel'}
+                value={hotelFilter}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setHotelFilter(value);
+                  if (value !== ALL_HOTELS_FILTER && selPropertyId !== value) {
+                    setSelPropertyId(null); setSelId(null); setThreadParent(null); setPanel(null); setMobileDetail(false);
+                  }
+                }}
+                style={{ minHeight: 44, minWidth: 0, flex: 1, padding: '0 9px', borderRadius: 8, border: `1px solid ${T.hair}`, background: T.paper, color: T.ink, fontFamily: SANS, fontSize: 12.5 }}
+              >
+                <option value={ALL_HOTELS_FILTER}>{'All hotels'}</option>
+                {hotelOptions.map((hotel) => <option key={hotel.propertyId} value={hotel.propertyId}>{hotel.propertyName}</option>)}
+              </select>
+            </label>
+          )}
         </div>
 
         <div style={{ padding: '10px 12px 6px' }}>
-          <button onClick={() => setSearchOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 11px', borderRadius: 8, border: `1px solid ${T.hair}`, background: T.paper, color: T.dim, cursor: 'pointer', fontFamily: SANS, fontSize: 13 }}>
+          <button onClick={beginSearch} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 11px', borderRadius: 8, border: `1px solid ${T.hair}`, background: T.paper, color: T.dim, cursor: 'pointer', fontFamily: SANS, fontSize: 13 }}>
             <Search size={14} /> {'Jump to or search…'}
           </button>
         </div>
@@ -471,21 +759,17 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
               answer to "can I post one". */}
           <SidebarSection
             label={'Announcements'}
-            onAdd={() => {
-              const feed = announce[0];
-              if (feed) selectConversation(feed.id);
-              else setSearchOpen(true);
-            }}
+            onAdd={beginAnnouncement}
             tip={'Post an announcement'}
           />
-          {announce.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
+          {announce.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={showHotelContext} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
           {/* The palette IS the browse surface for channels, so the behavior
               stays and the tooltip stops promising something else. */}
-          <SidebarSection label={'Channels'} onAdd={() => setSearchOpen(true)} tip={'Find a channel'} />
-          {channels.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
-          <SidebarSection label={'Direct messages'} onAdd={() => setShowNew(true)} tip={'Start a direct message'} />
+          <SidebarSection label={'Channels'} onAdd={() => beginSearch()} tip={'Find a channel'} />
+          {channels.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={showHotelContext} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
+          <SidebarSection label={'Direct messages'} onAdd={() => beginNewMessage()} tip={'Start a direct message'} />
           {dms.length === 0 && <div style={{ padding: '4px 20px', fontSize: 12, color: T.dim, fontFamily: SANS }}>{'No conversations yet'}</div>}
-          {dms.map((c) => <ConvoRow key={c.id} c={c} active={mode === 'chats' && c.id === selId} online={online} onClick={() => selectConversation(c.id)} L={L} />)}
+          {dms.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={showHotelContext} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
         </div>
       </aside>
 
@@ -502,14 +786,14 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
             <>
               {selConvo
                 ? <MessagePane
-                    pid={pid} me={boot.me} conversation={selConvo} messages={messages} online={online} memberCount={memberCount} L={L}
+                    pid={selectedPid!} me={boot.me} conversation={selConvo} showHotelContext={showHotelContext} messages={messages} online={online} memberCount={memberCount} L={L}
                     messagesLoading={messagesLoading} messagesError={messagesError} onRetryMessages={() => void loadThread(true, true)}
                     messagesHasOlder={messagesHasOlder} messagesOlderKnown={messagesOlderKnown}
                     messagesOlderLoading={messagesOlderLoading} messagesOlderError={messagesOlderError}
                     onLoadOlder={() => void loadOlderMessages()}
                     activeThreadId={threadParent?.id ?? null} activePanel={panel} scrollRef={scrollRef}
                     onReloadThread={() => loadThread(false, true)} onReloadBoot={loadBoot} onOpenThread={openThread} onTogglePanel={togglePanel}
-                    onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={() => setSearchOpen(true)} />
+                    onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={beginSearch} />
                 : <EmptyHint text={'Pick a conversation, or start a new message.'} />}
               {right}
             </>
@@ -518,10 +802,18 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
       </div>
 
       {/* ── Overlays ── */}
-      {searchOpen && <SearchPalette pid={pid} L={L} onClose={() => setSearchOpen(false)} onJump={jump} onOpenDm={openDm} />}
-      {showNew && boot && <NewMessageModal staff={boot.staff} L={L} onPick={openDm} onClose={() => setShowNew(false)} />}
+      {searchOpen && searchPropertyId && <SearchPalette pid={searchPropertyId} hotelName={showHotelContext ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === searchPropertyId)?.propertyName : undefined} L={L} onClose={closeSearch} onJump={(id) => jump(id, searchPropertyId)} onOpenDm={(staffId) => void openDm(staffId, searchPropertyId)} />}
+      {showNew && newMessagePropertyId && hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId) && (
+        <NewMessageModal
+          staff={hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId)!.data.staff}
+          hotelName={showHotelContext ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId)?.propertyName : undefined}
+          L={L}
+          onPick={(staffId) => void openDm(staffId, newMessagePropertyId)}
+          onClose={closeNewMessage}
+        />
+      )}
 
-      {(bootError || mutationError || taskNotice) && (
+      {(bootError || selectedHotelFailure || hotelBootstrapFailures.some((failure) => !failure.unauthorized) || mutationError || taskNotice) && (
         <div className="comms-alert-stack">
           {taskNotice && (
             /* "Turn this into a task" used to switch to the To-do nav item.
@@ -535,10 +827,10 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
               <button onClick={() => setTaskNotice(null)} aria-label={'Dismiss'}><X size={18} aria-hidden="true" /></button>
             </div>
           )}
-          {bootError && (
+          {(bootError || selectedHotelFailure || hotelBootstrapFailures.some((failure) => !failure.unauthorized)) && (
             <div className="comms-action-alert" role="alert">
               <AlertCircle size={18} aria-hidden="true" />
-              <span>{'Conversations could not refresh. Showing the last results.'}</span>
+              <span>{selectedHotelFailure ? `${selectedHotelFailure.propertyName} could not load. Try again.` : hotelBootstrapFailures.some((failure) => !failure.unauthorized) ? 'Some hotels could not refresh. Showing the available results.' : 'Conversations could not refresh. Showing the last results.'}</span>
               <button onClick={() => void loadBoot()} aria-label={'Retry loading conversations'}><RefreshCw size={17} aria-hidden="true" /></button>
             </div>
           )}
@@ -593,7 +885,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   );
 }
 
-function ResourceState({ loading, title, detail, retryLabel, onRetry }: { loading: boolean; title: string; detail: string; retryLabel: string; onRetry: () => void }) {
+function ResourceState({ loading, title, detail, retryLabel, canRetry = true, onRetry }: { loading: boolean; title: string; detail: string; retryLabel: string; canRetry?: boolean; onRetry: () => void }) {
   return (
     <div role={loading ? 'status' : 'alert'} aria-live={loading ? 'polite' : 'assertive'} style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 28, textAlign: 'center' }}>
       <style>{`@keyframes comms-resource-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.comms-resource-spin{animation:none!important}}`}</style>
@@ -601,7 +893,7 @@ function ResourceState({ loading, title, detail, retryLabel, onRetry }: { loadin
         {loading ? <Loader2 size={24} className="comms-resource-spin" style={{ animation: 'comms-resource-spin 1s linear infinite' }} color={T.forest} aria-hidden="true" /> : <AlertCircle size={24} color={T.terracotta} aria-hidden="true" />}
         <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{title}</div>
         <div style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.5, color: T.dim }}>{detail}</div>
-        {!loading && <button onClick={onRetry} style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '0 16px', borderRadius: 9, border: `1px solid ${T.hairer}`, background: T.bg, color: T.ink, fontFamily: SANS, fontWeight: 650, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" />{retryLabel}</button>}
+        {!loading && canRetry && <button onClick={onRetry} style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '0 16px', borderRadius: 9, border: `1px solid ${T.hairer}`, background: T.bg, color: T.ink, fontFamily: SANS, fontWeight: 650, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" />{retryLabel}</button>}
       </div>
     </div>
   );
@@ -635,7 +927,7 @@ function SidebarSection({ label, onAdd, tip }: { label: string; onAdd: () => voi
   );
 }
 
-function ConvoRow({ c, active, online, onClick, L }: { c: ConversationDTO; active: boolean; online: Set<string>; onClick: () => void; L: LType }) {
+function ConvoRow({ c, active, online, onClick, L, showPropertyLabel = false }: { c: ConversationDTO & { propertyName?: string }; active: boolean; online: Set<string>; onClick: () => void; L: LType; showPropertyLabel?: boolean }) {
   const unread = c.unread > 0 || (c.pendingAck ?? 0) > 0;
   const count = c.unread > 0 ? c.unread : (c.pendingAck ?? 0);
   const isDm = c.kind === 'dm';
@@ -652,7 +944,10 @@ function ConvoRow({ c, active, online, onClick, L }: { c: ConversationDTO; activ
             <span style={{ position: 'absolute', right: -2, bottom: -2, width: 8, height: 8, borderRadius: '50%', background: dmOnline ? T.forest : T.dim, border: `1.5px solid ${active ? T.ink : T.bg}` }} />
           </span>
         : <span style={{ color: active ? 'rgba(255,255,255,.7)' : T.dim, display: 'flex', width: 16, justifyContent: 'center', flexShrink: 0 }}>{c.kind === 'announcement' ? <Megaphone size={15} /> : <span style={{ fontFamily: SANS, fontSize: 15 }}>#</span>}</span>}
-      <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</span>
+      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1, overflow: 'hidden' }}>
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</span>
+        {showPropertyLabel && c.propertyName && <span aria-label={`Hotel: ${c.propertyName}`} style={{ color: active ? 'rgba(255,255,255,.75)' : T.dim, fontSize: 10.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.propertyName}</span>}
+      </span>
       {unread && !active && <span style={{ minWidth: 18, height: 18, padding: '0 5px', borderRadius: 9, background: T.terracotta, color: '#fff', fontFamily: SANS, fontWeight: 700, fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{count}</span>}
     </button>
   );
