@@ -80,7 +80,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (!account) return refusal('forbidden', requestId);
   const rateLimit = await checkAndIncrementRateLimit(
     'comms-read',
-    hashToRateLimitKey(`${account.accountId}:${organizationId ?? 'authority'}`),
+    hashToRateLimitKey(`${account.accountId}:${session.userId}`),
   );
   if (!rateLimit.allowed) return rateLimitedResponse(rateLimit.current, rateLimit.cap, rateLimit.retryAfterSec);
   const resolved = await resolveMultiHotelScope({
@@ -98,6 +98,11 @@ export async function GET(req: NextRequest): Promise<Response> {
       const replies = await readLogRepliesForHotel(hotel, entryId.value);
       const current = await multiHotelScopeStillCurrent(resolved.scope);
       if (!current.ok) return refusal(current.reason, requestId);
+      if (replies.reason === 'not_found') {
+        return err('This log book entry was removed or is no longer available.', {
+          requestId, status: 404, code: ApiErrorCode.NotFound,
+        });
+      }
       if (!replies.ok) {
         return err('Could not load this log book entry', {
           requestId, status: 503, code: ApiErrorCode.UpstreamFailure, headers: { 'Retry-After': '5' },
@@ -108,7 +113,8 @@ export async function GET(req: NextRequest): Promise<Response> {
         hotel: { propertyId: hotel.propertyId, hotelName: hotel.hotelName, timezone: hotel.timezone },
         entryId: entryId.value,
         replies: replies.value,
-        ready: true,
+        repliesComplete: replies.truncated !== true,
+        ready: replies.truncated !== true,
       }, { requestId });
     }
     const payload = await readMultiHotelSurface(resolved.scope, surfaceRaw);

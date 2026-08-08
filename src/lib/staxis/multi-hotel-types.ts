@@ -15,7 +15,10 @@ export interface MultiHotelLabel {
   timezone: string | null;
 }
 
-export interface MultiHotelLogEntry extends LogEntryDTO, MultiHotelLabel {}
+export interface MultiHotelLogEntry extends LogEntryDTO, MultiHotelLabel {
+  /** False when the per-entry reply read hit its bounded cap. */
+  replyCountComplete: boolean;
+}
 
 export interface MultiHotelAssignedItem extends AssignedByMeItem, MultiHotelLabel {}
 
@@ -36,6 +39,14 @@ export interface MultiHotelCoverage {
   omittedHotelCount: number;
   unavailableHotelCount: number;
   unavailable: MultiHotelUnavailable[];
+  /** Global row/byte budgets keep large portfolios bounded and explicit. */
+  rowBudget: number;
+  /** A lower bound when a source window or response budget hid more rows. */
+  rowsReturned: number;
+  rowsOmitted: number;
+  responseByteBudget: number;
+  responseBytesEstimated: number;
+  truncated: boolean;
   complete: boolean;
 }
 
@@ -64,4 +75,24 @@ export function filterMultiHotelRows<T extends MultiHotelLabel>(
   return propertyId === 'all'
     ? [...rows]
     : rows.filter((row) => row.propertyId === propertyId);
+}
+
+/** Format a row using the hotel's wall clock, with a safe local fallback. */
+export function formatMultiHotelDate(
+  value: string | null | undefined,
+  timezone: string | null | undefined,
+  locale?: string,
+): string {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return '';
+  try {
+    return new Intl.DateTimeFormat(locale, {
+      month: 'short',
+      day: 'numeric',
+      timeZone: timezone ?? undefined,
+    }).format(parsed);
+  } catch {
+    return parsed.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
+  }
 }

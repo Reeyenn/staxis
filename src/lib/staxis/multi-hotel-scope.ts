@@ -306,7 +306,7 @@ export async function resolveExistingStaffByProperty(input: {
       .select('id, property_id, auth_user_id, department, is_active')
       .in('property_id', ids)
       .eq('auth_user_id', input.authUserId)
-      .eq('is_active', true),
+      .or('is_active.eq.true,is_active.is.null'),
     supabaseAdmin
       .from('accounts')
       .select('staff_id')
@@ -331,7 +331,7 @@ export async function resolveExistingStaffByProperty(input: {
       .select('id, property_id, auth_user_id, department, is_active')
       .in('id', [...candidateIds])
       .in('property_id', ids)
-      .eq('is_active', true);
+      .or('is_active.eq.true,is_active.is.null');
   if (candidateRows.error) return null;
 
   const rows = (candidateRows.data ?? []) as ExistingStaffRow[];

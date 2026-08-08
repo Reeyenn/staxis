@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 import {
   buildMultiHotelRowsPayload,
   isSharedPropertyMemory,
+  MAX_MULTI_HOTEL_RESPONSE_ROWS,
 } from '@/lib/staxis/multi-hotel';
 import {
   authorizationReceiptMatches,
@@ -14,6 +15,7 @@ import {
 import {
   canClaimMultiHotelEmpty,
   filterMultiHotelRows,
+  formatMultiHotelDate,
   type MultiHotelCoverage,
 } from '@/lib/staxis/multi-hotel-types';
 import { keepForAssigner } from '@/lib/worklist/core';
@@ -52,6 +54,7 @@ function logEntry(propertyId: string, id: string, createdAt: string) {
     authorStaffId: null,
     authorName: null,
     replyCount: 0,
+    replyCountComplete: true,
     createdAt,
     updatedAt: createdAt,
   };
@@ -74,6 +77,7 @@ describe('multi-hotel Staxis access contract', () => {
       scope,
       attemptedHotels: [alpha, bravo],
       unavailable: [],
+      surface: 'logbook',
       entries: [
         logEntry(PROPERTY_A, 'older', '2026-08-07T10:00:00Z'),
         logEntry(PROPERTY_C, 'foreign', '2026-08-09T10:00:00Z'),
@@ -88,13 +92,14 @@ describe('multi-hotel Staxis access contract', () => {
       scope,
       attemptedHotels: [alpha, bravo],
       unavailable: [{ propertyId: PROPERTY_B, hotelName: 'Bravo', reason: 'read_failed' }],
+      surface: 'logbook',
       entries: [logEntry(PROPERTY_A, 'available', '2026-08-08T10:00:00Z'), logEntry(PROPERTY_B, 'unavailable', '2026-08-08T11:00:00Z')],
     });
     assert.deepEqual(partial.entries.map((entry) => entry.id), ['available']);
     assert.equal(partial.coverage.complete, false);
   });
 
-  test('missing local identity is absent, while duplicate exact identities are unavailable', () => {
+  test('missing local identity is unavailable, while duplicate exact identities are also unavailable', () => {
     const absent = chooseExistingStaffIdentity({
       propertyId: PROPERTY_A,
       authUserId: AUTH_USER,
@@ -104,6 +109,24 @@ describe('multi-hotel Staxis access contract', () => {
       deterministicCandidate: null,
     });
     assert.deepEqual(absent, { kind: 'absent' });
+    const unresolved = hotel(PROPERTY_A, 'Alpha');
+    const unresolvedScope = {
+      accountId: ACCOUNT,
+      organizationId: null,
+      hotels: [unresolved],
+      authorizedPropertyIds: [PROPERTY_A],
+      authorityHash: 'a'.repeat(64),
+      authorityAll: false,
+      authorizationReceipt: null,
+    };
+    const unresolvedPayload = buildMultiHotelRowsPayload({
+      scope: unresolvedScope,
+      attemptedHotels: [unresolved],
+      unavailable: [{ propertyId: PROPERTY_A, hotelName: 'Alpha', reason: 'identity_unavailable' }],
+      surface: 'assigned-by-me',
+    });
+    assert.equal(unresolvedPayload.coverage.complete, false);
+    assert.equal(unresolvedPayload.coverage.unavailable[0]?.reason, 'identity_unavailable');
     const row = (id: string) => ({
       id,
       property_id: PROPERTY_A,
@@ -144,6 +167,17 @@ describe('multi-hotel Staxis access contract', () => {
       }),
       { kind: 'ambiguous' },
     );
+    assert.deepEqual(
+      chooseExistingStaffIdentity({
+        propertyId: PROPERTY_A,
+        authUserId: AUTH_USER,
+        linkedCandidates: [],
+        authCandidates: [{ ...row('5'.repeat(36)), is_active: null }],
+        legacyCandidate: null,
+        deterministicCandidate: null,
+      }),
+      { kind: 'identity', staffId: '5'.repeat(36), department: 'front_desk' },
+    );
   });
 
   test('Assigned by me uses the exact local author and keeps self-assigned work out', () => {
@@ -178,6 +212,12 @@ describe('multi-hotel Staxis access contract', () => {
       omittedHotelCount: 0,
       unavailableHotelCount: 1,
       unavailable: [],
+      rowBudget: 5_000,
+      rowsReturned: 1,
+      rowsOmitted: 0,
+      responseByteBudget: 3_000_000,
+      responseBytesEstimated: 100,
+      truncated: false,
       complete: false,
     } satisfies MultiHotelCoverage;
     assert.equal(canClaimMultiHotelEmpty(coverage), false);
@@ -187,6 +227,72 @@ describe('multi-hotel Staxis access contract', () => {
     ];
     assert.deepEqual(filterMultiHotelRows(rows, PROPERTY_B).map((row) => row.value), ['row B']);
     assert.deepEqual(filterMultiHotelRows(rows, 'all').map((row) => row.value), ['row A', 'row B']);
+  });
+
+  test('aggregate row window is deterministic and explicit instead of silently claiming complete history', () => {
+    const alpha = hotel(PROPERTY_A, 'Alpha');
+    const scope = {
+      accountId: ACCOUNT,
+      organizationId: null,
+      hotels: [alpha],
+      authorizedPropertyIds: [PROPERTY_A],
+      authorityHash: 'a'.repeat(64),
+      authorityAll: false,
+      authorizationReceipt: null,
+    };
+    const payload = buildMultiHotelRowsPayload({
+      scope,
+      attemptedHotels: [alpha],
+      unavailable: [],
+      surface: 'logbook',
+      entries: Array.from({ length: MAX_MULTI_HOTEL_RESPONSE_ROWS + 37 }, (_, index) => (
+        logEntry(PROPERTY_A, `row-${index}`, `2026-08-08T${String(index % 24).padStart(2, '0')}:00:00Z`)
+      )),
+    });
+    assert.equal(payload.entries.length, MAX_MULTI_HOTEL_RESPONSE_ROWS);
+    assert.equal(payload.coverage.rowsOmitted, 37);
+    assert.equal(payload.coverage.truncated, true);
+    assert.equal(payload.coverage.complete, false);
+
+    const sourceWindowed = buildMultiHotelRowsPayload({
+      scope,
+      attemptedHotels: [alpha],
+      unavailable: [],
+      surface: 'logbook',
+      entries: [logEntry(PROPERTY_A, 'only-visible-row', '2026-08-08T10:00:00Z')],
+      sourceTruncated: true,
+    });
+    assert.equal(sourceWindowed.coverage.truncated, true);
+    assert.equal(sourceWindowed.coverage.complete, false);
+    assert.equal(sourceWindowed.coverage.rowsOmitted, 1);
+  });
+
+  test('response byte budget counts UTF-8 bytes and formats dates in the hotel timezone', () => {
+    const alpha = hotel(PROPERTY_A, 'Alpha');
+    const scope = {
+      accountId: ACCOUNT,
+      organizationId: null,
+      hotels: [alpha],
+      authorizedPropertyIds: [PROPERTY_A],
+      authorityHash: 'a'.repeat(64),
+      authorityAll: false,
+      authorizationReceipt: null,
+    };
+    const unicodeRow = { ...logEntry(PROPERTY_A, 'unicode', '2026-08-08T10:00:00Z'), body: '💡'.repeat(800_000) };
+    const payload = buildMultiHotelRowsPayload({
+      scope,
+      attemptedHotels: [alpha],
+      unavailable: [],
+      surface: 'logbook',
+      entries: [unicodeRow],
+    });
+    assert.equal(payload.entries.length, 0);
+    assert.equal(payload.coverage.truncated, true);
+    assert.equal(formatMultiHotelDate('2026-08-08T01:00:00Z', 'America/Chicago', 'en-US'), 'Aug 7');
+    assert.equal(
+      formatMultiHotelDate('2026-08-08T01:00:00Z', 'not/a-timezone', 'en-US'),
+      new Date('2026-08-08T01:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+    );
   });
 
   test('property memory excludes both current-user and other-user subjects', () => {
@@ -220,6 +326,7 @@ describe('multi-hotel Staxis access contract', () => {
     assert.match(scope, /auth_user_id/);
     assert.match(scope, /commsStaffIdentityId\(propertyId, input\.accountId\)/);
     assert.match(scope, /identityAmbiguous/);
+    assert.match(scope, /is_active\.eq\.true,is_active\.is\.null/);
     assert.doesNotMatch(scope, /display_name/);
     assert.doesNotMatch(scope, /\.insert\(/);
     assert.doesNotMatch(scope, /\.update\(/);
@@ -227,8 +334,9 @@ describe('multi-hotel Staxis access contract', () => {
 
   test('Assigned by me remains author-scoped and distinguishes absent from ambiguous identity', () => {
     const read = source('src', 'lib', 'staxis', 'multi-hotel.ts');
-    assert.match(read, /gatherAssignedByMe\(/);
+    assert.match(read, /gatherAssignedByMeWithMeta\(/);
     assert.match(read, /!hotel\.staffId/);
+    assert.match(read, /reason: 'identity_unavailable'/);
     assert.match(read, /ok: true, value: \[\]/);
     assert.match(read, /hotel\.identityAmbiguous/);
     assert.match(read, /scope.*property/);
@@ -250,6 +358,11 @@ describe('multi-hotel Staxis access contract', () => {
     assert.match(route, /readLogRepliesForHotel\(hotel, entryId\.value\)/);
     assert.match(route, /multiHotelScopeStillCurrent\(resolved\.scope\)/);
     assert.match(route, /checkAndIncrementRateLimit\(\s*'comms-read'/);
+    assert.match(route, /hashToRateLimitKey\(`\$\{account\.accountId\}:\$\{session\.userId\}`\)/);
+    assert.doesNotMatch(route, /hashToRateLimitKey\(`\$\{account\.accountId\}:\$\{organizationId/);
+    assert.match(route, /replies\.reason === 'not_found'[\s\S]*status: 404/);
+    assert.match(route, /This log book entry was removed or is no longer available/);
+    assert.match(route, /repliesComplete: replies\.truncated !== true/);
     assert.match(route, /ready: payload\.coverage\.complete/);
   });
 
@@ -259,6 +372,8 @@ describe('multi-hotel Staxis access contract', () => {
     assert.match(panel, /!payload\.coverage\.complete/);
     assert.match(panel, /payload && surface === 'logbook'/);
     assert.match(panel, /hotels\.length > 1/);
+    assert.match(panel, /aria-pressed/);
+    assert.match(panel, /Showing the first 500 replies/);
     assert.doesNotMatch(panel, /onOpenLogbook|Open \{entry\.hotelName\}/);
     assert.match(list, /propertyId=\{propertyId\}/);
   });
