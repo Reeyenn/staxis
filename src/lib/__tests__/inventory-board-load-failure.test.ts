@@ -20,7 +20,7 @@ test('inventory board keeps core item work available while failed supporting dat
   assert.match(shell, /if \(itemsLoadError\) \{/);
   assert.doesNotMatch(shell, /if \(itemsLoadError \|\| bundleLoadError\)/);
   assert.match(shell, /\{bundleLoadError && \(/);
-  assert.match(shell, /if \(d\.spend != null && d\.financialEvidenceAttempted\) \{\s*setSpendDetail\(d\.spend\);\s*setSpendDataAvailable\(true\)/);
+  assert.match(shell, /if \(d\.spend != null && d\.financialEvidenceAttempted && financialSurfaceEnabled\) \{\s*setSpendDetail\(d\.spend\);\s*setSpendDataAvailable\(true\)/);
 });
 
 test('initial loads and refreshes expose partial failure without cross-hotel repainting', () => {
@@ -34,9 +34,9 @@ test('initial loads and refreshes expose partial failure without cross-hotel rep
     /activePropertyIdRef\.current !== requestedPropertyId[\s\S]*?inventoryBoardRequestIsCurrent\(data\.requestScope, boardRequestScopeRef\.current\)/,
   );
   assert.match(shell, /setBundleLoadError\(data\.secondaryFailure\)/);
-  assert.match(shell, /fetchBoardData\(uid, activePropertyId, 'operational'\)/);
-  assert.match(shell, /fetchBoardData\(uid, activePropertyId, 'secondary'\)/);
-  assert.match(shell, /fetchBoardData\(uid, requestedPropertyId, 'all'\)/);
+  assert.match(shell, /fetchBoardData\(uid, activePropertyId, 'operational', capabilityViewerKey\)/);
+  assert.match(shell, /fetchBoardData\(uid, activePropertyId, 'secondary', capabilityViewerKey\)/);
+  assert.match(shell, /fetchBoardData\(uid, requestedPropertyId, 'all', requestedViewerKey\)/);
 });
 
 test('the board bundle has a firm terminal deadline and no cosmetic reveal failsafe', () => {

@@ -55,7 +55,7 @@ test('inventory starts ordinary stock from hotel reach while sensitive controls 
   );
   assert.match(inventoryShell, /const canViewFinancials = inventoryFinancialDataEnabled\(\{[\s\S]*?contextReady: inventoryContextReady,[\s\S]*?hasCapability: can\('view_financials'\),[\s\S]*?enabledSections: activeProperty\?\.enabledSections/);
   assert.ok(
-    (inventoryShell.match(/if \(!uid \|\| !activePropertyId \|\| !inventoryViewerContextReady/g) ?? []).length >= 2,
+    (inventoryShell.match(/if \(!uid \|\| !activePropertyId \|\| (?:!capabilityViewerKey \|\| )?!inventoryViewerContextReady/g) ?? []).length >= 4,
   );
   assert.match(
     inventoryShell,
@@ -147,10 +147,10 @@ test('Inventory-only hotels treat finance denial and empty inventory as valid st
     /const closeDashboardPromise[\s\S]*?financialEvidenceAttempted && financialDataReady[\s\S]*?\/api\/inventory\/month-close/,
   );
   assert.match(inventoryShell, /canViewFinancials && financialDataReady[\s\S]*?listInventoryBudgets/);
-  assert.match(inventoryShell, /open=\{overlay === 'reports' && canViewFinancials\}/);
-  assert.match(inventoryShell, /open=\{overlay === 'budgets' && canViewFinancials\}/);
-  assert.match(inventoryShell, /open=\{overlay === 'close' && canManage && canViewFinancials\}/);
-  assert.match(inventoryShell, /const canScanInvoices = canManage && canViewFinancials/);
+  assert.match(inventoryShell, /open=\{overlay === 'reports' && financialSurfaceEnabled\}/);
+  assert.match(inventoryShell, /open=\{overlay === 'budgets' && financialSurfaceEnabled\}/);
+  assert.match(inventoryShell, /open=\{overlay === 'close' && canManage && financialSurfaceEnabled\}/);
+  assert.match(inventoryShell, /const canScanInvoices = canManage && financialSurfaceEnabled/);
   assert.match(inventoryShell, /if \(action === 'scan' && !canScanInvoices\) return/);
   assert.match(inventoryShell, /setOverlay\(action === 'scan' \? 'delivery'/);
   assert.match(inventoryShell, /canScanInvoices=\{canScanInvoices\}/);
