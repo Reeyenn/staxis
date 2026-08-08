@@ -62,6 +62,7 @@ import {
   listPortfolioCompaniesUncached,
   type PortfolioCompanyCatalogEntry,
 } from '@/lib/company/portfolio';
+import { accountHasCompanyHat } from '@/lib/company/access';
 import { rankHotels, type HotelChip } from '@/lib/company/vp-queue';
 import { isUuid } from '@/lib/authorization';
 import {
@@ -337,6 +338,7 @@ export async function GET(req: NextRequest) {
         {
           hotels: [],
           reachableHotelCount: 0,
+          hasCompanyHat: accountHasCompanyHat(account.hats),
           company: null,
           companies: companies.map((company) => ({
             organizationId: company.organizationId,
@@ -405,6 +407,7 @@ export async function GET(req: NextRequest) {
         /** How many this account reaches in total. Only an unscoped platform
          *  admin can exceed `hotels.length`; exact company lists are complete. */
         reachableHotelCount,
+        hasCompanyHat: accountHasCompanyHat(account.hats),
         company: selectedCompany
           ? {
             organizationId: selectedCompany.organizationId,

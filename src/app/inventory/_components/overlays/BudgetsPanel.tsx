@@ -90,6 +90,7 @@ function bpStrings(lang: Lang) {
       cancel: 'Cancel',
       saving: 'Saving…',
       save: 'Save budgets',
+      discardConfirm: 'You have unsaved budget changes. Close and discard them?',
       chooseMethodTitle: 'Choose how to budget',
       totalTitle: 'One total budget',
       totalSub: 'A single number for the whole inventory.',
@@ -534,6 +535,17 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     }
   };
 
+  // Typed caps and a switched budgeting method live only in this panel until
+  // Save writes them. Backdrop clicks and Escape both run this, so a stray tap
+  // can no longer erase a year of budget entry ("Copy to every month" dirties
+  // all 12 months of every row in one press).
+  const unsaved = dirty.size > 0 || mode !== savedMode;
+  const requestClose = () => {
+    if (saving) return;
+    if (unsaved && !confirm(bp.discardConfirm)) return;
+    onClose();
+  };
+
   // ── Render ───────────────────────────────────────────────────────────
   const rows: Array<{ key: string; label: string; icon: React.ReactNode; section?: InventoryBudgetSection }> =
     mode === 'total'
@@ -555,13 +567,14 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
   return (
     <Overlay
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
+      hasUnsavedChanges={unsaved}
       eyebrow={bp.eyebrow}
       italic={`${MONTHS[month]} ${year}`}
       width={720}
       footer={
         <>
-          <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>{bp.cancel}</Btn>
+          <Btn variant="ghost" size="md" onClick={requestClose} disabled={saving}>{bp.cancel}</Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving}>
             {saving ? bp.saving : bp.save}
           </Btn>

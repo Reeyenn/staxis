@@ -263,8 +263,10 @@ describe('create_todo + add_logbook_entry', () => {
     assert.equal(res.ok, false);
     assert.match(res.error ?? '', /housekeeping board/i);
     // Says what to do instead. A refusal the model cannot turn into an offer is
-    // just a dead end for the manager who asked.
-    assert.match(res.error ?? '', /named person|unassigned/i);
+    // just a dead end for the manager who asked. The sentence itself is owned by
+    // worklist/assignable.ts, which the to-do route and comms/core.ts refuse
+    // with too, so this asserts the way through the tool actually relays.
+    assert.match(res.error ?? '', /put it on their board/i);
     assert.equal(createdTasks.length, 0, 'nothing may be written that lands on no screen');
   });
 

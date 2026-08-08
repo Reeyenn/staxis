@@ -19,7 +19,7 @@ export const PORTFOLIO_UI_SECTIONS = [
 ] as const;
 
 export type PortfolioUiSection = (typeof PORTFOLIO_UI_SECTIONS)[number];
-export type PortfolioUiCompanyRole = 'owner' | 'vp' | 'finance';
+export type PortfolioUiCompanyRole = 'owner' | 'regional_manager';
 
 export function isPortfolioUiSection(value: unknown): value is PortfolioUiSection {
   return typeof value === 'string'
@@ -143,6 +143,9 @@ export interface PortfolioUiSelection {
 export interface PortfolioUiBootstrapV1 {
   version: typeof PORTFOLIO_UI_VERSION;
   generatedAt: string;
+  /** True only when the account holds an owner/regional-manager company hat,
+   * even if that hat currently covers no hotels. */
+  hasCompanyHat: boolean;
   contexts: PortfolioUiCompanyContext[];
   entry: PortfolioUiEntryDecisionInputs;
   selection: PortfolioUiSelection;

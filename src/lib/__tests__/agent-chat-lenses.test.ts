@@ -109,6 +109,12 @@ const FRONT_DESK_MOUNT = [
   'log_complaint', 'log_found_item', 'mark_room_clean', 'query_room_status', 'remember',
   'request_help', 'reset_room', 'search_knowledge', 'search_lost_found', 'send_message',
   'toggle_dnd',
+  // Added deliberately (the companion tour, 2026-08-07): being shown the app
+  // once. The desk is where turnover is highest and where the person is most
+  // often brand new, so the introduction is the one thing this lens must not
+  // withhold. It reads nothing, writes nothing and presses nothing, and the
+  // stops it runs are already narrowed to the screens this hat has.
+  'staxis_show_around',
 ].sort();
 
 const MAINTENANCE_MOUNT = [
@@ -128,6 +134,10 @@ const MAINTENANCE_MOUNT = [
   // and the tool can only name keys the awareness block already listed for the
   // screen they are standing on.
   'staxis_point_at',
+  // And being shown the whole thing once (the companion tour, 2026-08-07). A
+  // maintenance hire is as new on their first day as anybody, and their tour is
+  // the three screens they actually use rather than the manager's eight.
+  'staxis_show_around',
 ].sort();
 
 describe('the mount table', () => {

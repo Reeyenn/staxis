@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { env } from '@/lib/env';
+import { isPublicPath } from '@/lib/public-paths';
 
 /**
  * Edge auth gate.
@@ -15,46 +16,18 @@ import { env } from '@/lib/env';
  * "flash of protected HTML" gap and make signed-out direct hits land on
  * the sign-in page from the server, not from a client-side bounce.
  *
- * Public allowlist below is exhaustive — anything not listed is treated
- * as protected. /api/* is included because each API route does its own
- * auth via requireSession / requireAdmin / requireCronSecret; redirecting
- * unauthenticated /api/* requests to /signin would break JSON consumers.
+ * The public allowlist lives in src/lib/public-paths.ts and is exhaustive —
+ * anything not listed is treated as protected. /api/* is included because each
+ * API route does its own auth via requireSession / requireAdmin /
+ * requireCronSecret; redirecting unauthenticated /api/* requests to /signin
+ * would break JSON consumers.
+ *
+ * It sits in a shared module rather than inline here so the public-page guards
+ * (the anon-client lint rule + its coverage test) read the SAME list this gate
+ * enforces. They used to keep a private copy, which drifted the moment the
+ * public pages moved into Next route groups — see the header of
+ * src/lib/public-paths.ts.
  */
-
-const PUBLIC_EXACT = new Set<string>([
-  // Marketing / landing
-  '/',
-  // Legal + consent
-  '/privacy',
-  '/terms',
-  '/consent',
-  // Signup / onboarding flow
-  '/signup',
-  '/onboard',
-  '/join',
-  // SMS-linked staff pages — auth via URL params (uid+pid+staffId), not session
-  '/housekeeper',
-  '/laundry',
-]);
-
-const PUBLIC_PREFIXES = [
-  '/signin',         // /signin, /signin/verify, /signin/forgot, /signin/reset
-  '/phone-signin',   // QR phone handoff; all data/auth gates live in /api routes
-  '/onboard/',       // unified onboarding wizard sub-steps
-  '/invite/',        // /invite/[token]
-  '/company-invite/', // scoped organization invite (token-gated page)
-  '/housekeeper/',   // /housekeeper/[id]
-  '/laundry/',       // /laundry/[id]
-  '/api/',           // every API route does its own auth
-];
-
-function isPublicPath(pathname: string): boolean {
-  if (PUBLIC_EXACT.has(pathname)) return true;
-  for (const prefix of PUBLIC_PREFIXES) {
-    if (pathname.startsWith(prefix)) return true;
-  }
-  return false;
-}
 
 /**
  * Derive the Supabase auth cookie name prefix from the project URL.
@@ -85,10 +58,15 @@ export function middleware(req: NextRequest): NextResponse {
 
   if (isPublicPath(pathname)) {
     const response = NextResponse.next();
-    // Organization invite URLs contain a single-use capability in the path.
-    // Suppress Referer entirely (including same-origin navigations to sign-in)
-    // so the raw token cannot be copied into access logs or telemetry there.
-    if (pathname.startsWith('/company-invite/')) {
+    // Invite URLs contain a single-use capability in the path. Suppress Referer
+    // entirely (including same-origin navigations to sign-in) so the raw token
+    // cannot be copied into access logs or telemetry there.
+    //
+    // This guard used to name only the retired /company-invite/ path, even
+    // though /invite/[token] has always carried a token in exactly the same
+    // way. Retiring that path moves the protection onto the one that survives
+    // instead of removing it.
+    if (pathname.startsWith('/invite/')) {
       response.headers.set('Referrer-Policy', 'no-referrer');
       response.headers.set('Cache-Control', 'private, no-store, max-age=0');
     }

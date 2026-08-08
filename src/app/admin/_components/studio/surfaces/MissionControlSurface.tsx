@@ -64,10 +64,49 @@ interface SystemServices { web: ServiceStatus; ml: ServiceStatus; supabase: Serv
 
 interface AgentMetrics {
   caps?: { user: number; property: number; global: number };
-  today?: { totalCostUsd?: number; backgroundCostUsd?: number; requestCount?: number };
+  today?: {
+    totalCostUsd?: number;
+    backgroundCostUsd?: number;
+    visionCostUsd?: number;
+    audioCostUsd?: number;
+    evalCostUsd?: number;
+    /** Every finalized row today, whatever kind. See spendTodayUsd below. */
+    allKindsCostUsd?: number;
+    requestCount?: number;
+  };
   toolErrorsToday?: number;
   toolIncompleteToday?: number;
   topTools?: Array<{ tool: string; calls: number; errors: number; incomplete: number; errorRatePct: number }>;
+}
+
+/**
+ * WHAT THE "AI SPEND TODAY" LIGHT IS ALLOWED TO CALL THE TOTAL.
+ *
+ * It used to be `totalCostUsd + backgroundCostUsd`, two of the three buckets the
+ * metrics endpoint happened to publish when this surface was written. The ledger
+ * grew two more kinds after that (voice notes, and every photo/PDF/scanned-page
+ * read) and this line did not, so the one number on the founder's dashboard that
+ * says what the product costs him was missing its most expensive part. A day of
+ * invoice scanning read as green and near zero.
+ *
+ * Now it takes the endpoint's own all-rows figure. The addition is kept only as
+ * the fallback for a response cached from a build that predates that field, and
+ * it is deliberately a floor rather than a guess: an old payload under-reports,
+ * which is exactly the failure above, so `asOfDate` on the card says how fresh
+ * the read is and the breakdown below shows which parts are known.
+ *
+ * Exported because a number a founder acts on should be checkable without
+ * mounting a dashboard.
+ */
+export function spendTodayUsd(metrics: AgentMetrics | null): number {
+  const today = metrics?.today;
+  if (!today) return 0;
+  if (typeof today.allKindsCostUsd === 'number') return today.allKindsCostUsd;
+  return (today.totalCostUsd ?? 0)
+    + (today.backgroundCostUsd ?? 0)
+    + (today.visionCostUsd ?? 0)
+    + (today.audioCostUsd ?? 0)
+    + (today.evalCostUsd ?? 0);
 }
 
 // mission/workers row. The endpoint assigns `tier` server-side ('ai' |
@@ -290,13 +329,17 @@ export function MissionControlSurface() {
     return { tone, detail };
   })();
 
-  const copilotSpend = (metrics?.today?.totalCostUsd ?? 0) + (metrics?.today?.backgroundCostUsd ?? 0);
+  const spendToday = spendTodayUsd(metrics);
   const globalCap = metrics?.caps?.global ?? 0;
-  const copilotPct = globalCap > 0 ? copilotSpend / globalCap : 0;
+  const spendPct = globalCap > 0 ? spendToday / globalCap : 0;
   const spendLight = (() => {
     if (!metrics) return { tone: 'muted' as DotTone, detail: 'No AI spend yet today.' };
-    const tone: DotTone = copilotPct >= 1 ? 'terracotta' : copilotPct >= 0.7 ? 'gold' : 'forest';
-    const detail = 'Copilot ' + money(copilotSpend) + (globalCap > 0 ? ' of $' + globalCap : '') + ' today';
+    const tone: DotTone = spendPct >= 1 ? 'terracotta' : spendPct >= 0.7 ? 'gold' : 'forest';
+    // The cap is deliberately NOT quoted on this line any more. $500 governs
+    // chat turns only, so printing it beside a figure that now includes scans,
+    // voice notes and background work read as a ceiling on all of it, which it
+    // has never been. The expanded card says which is which.
+    const detail = money(spendToday) + ' today, everything included';
     return { tone, detail };
   })();
 
@@ -327,7 +370,7 @@ export function MissionControlSurface() {
           card doesn't stretch its two siblings into hollow boxes. ──────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 26, alignItems: 'start' }}>
         <HealthLight tone={appLight.tone} label="App" detail={appLight.detail} expanded={<AppDetail system={system} />} />
-        <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} />} />
+        <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail metrics={metrics} total={spendToday} cap={globalCap} />} />
       </div>
 
       {/* ── Block 2 — the roster in three side-by-side columns (owner's
@@ -503,13 +546,41 @@ function AppDetail({ system }: { system: SystemServices | null }) {
 
 // ── Spend light click-through — a compact live summary; the full
 //    tech-stack spend board lives on the Money tab (owner ask 2026-07-18).
-function SpendDetail({ copilotSpend }: { copilotSpend: number }) {
+//
+// The breakdown is here so the headline number can be checked against its own
+// parts. Every line is a kind the ledger actually records, and the lines add up
+// to the total by construction: a kind this build does not name still sits
+// inside `total`, and shows as "Something else" rather than going missing.
+function SpendDetail({ metrics, total, cap }: {
+  metrics: AgentMetrics | null;
+  total: number;
+  cap: number;
+}) {
+  const today = metrics?.today;
+  const named: Array<[string, number]> = [
+    ['Questions people asked', today?.totalCostUsd ?? 0],
+    ['Work that runs on its own', today?.backgroundCostUsd ?? 0],
+    ['Photos and documents read', today?.visionCostUsd ?? 0],
+    ['Voice notes written out', today?.audioCostUsd ?? 0],
+    ['Testing', today?.evalCostUsd ?? 0],
+  ];
+  const namedTotal = named.reduce((sum, [, usd]) => sum + usd, 0);
+  const other = Math.max(0, Math.round((total - namedTotal) * 10000) / 10000);
+  const lines = other > 0 ? [...named, ['Something else', other] as [string, number]] : named;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: dimWhite(.7) }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-        <span>Copilot &amp; in-app AI</span>
-        <span className="mono" style={{ color: '#fff' }}>{money(copilotSpend)} today</span>
-      </div>
+      {lines.map(([label, usd]) => (
+        <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+          <span>{label}</span>
+          <span className="mono" style={{ color: '#fff' }}>{money(usd)}</span>
+        </div>
+      ))}
+      {cap > 0 && (
+        <div style={{ fontSize: 11, color: dimWhite(.45), marginTop: 2, lineHeight: 1.45 }}>
+          The ${cap} a day limit covers the questions line only. The rest has its own smaller limits.
+        </div>
+      )}
       <div style={{ marginTop: 4 }}>
         <Btn size="sm" variant="ghost" href="/admin/properties#money" style={{ color: 'var(--gold)', borderColor: 'rgba(201,154,46,.4)' }}>
           Full bill &amp; tech-stack costs → Money tab
@@ -617,7 +688,11 @@ export function AiEmployeeRow({ e }: { e: StaffMember }) {
 function CopilotRow({ metrics }: { metrics: AgentMetrics | null }) {
   const [open, setOpen] = useState(false);
   const requests = metrics?.today?.requestCount ?? 0;
-  const spend = (metrics?.today?.totalCostUsd ?? 0) + (metrics?.today?.backgroundCostUsd ?? 0);
+  // The COPILOT'S OWN turns, and nothing else. This used to add background work
+  // in, which put the Morning Briefer's nightly wording pass on the copilot's
+  // line AND on the Briefer's card three rows below it: the same dollar, twice,
+  // on one screen. The rest of the day's spend is on the light at the top.
+  const spend = metrics?.today?.totalCostUsd ?? 0;
   const trouble = (metrics?.toolErrorsToday ?? 0) + (metrics?.toolIncompleteToday ?? 0);
   const tone: DotTone = !metrics ? 'muted' : trouble > 0 ? 'gold' : 'forest';
   const tools = metrics?.topTools ?? [];

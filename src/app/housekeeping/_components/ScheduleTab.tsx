@@ -57,6 +57,8 @@ import {
   INTERACTIVE_ACTION_TIMEOUT_MS,
 } from '@/lib/api-fetch';
 import { useFeedStatus } from '@/lib/use-feed-status';
+import { snapshotCountsApplyTo } from '@/lib/pms/feed-status';
+import { useTodayStr } from '@/lib/use-today-str';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 import { subscribeToDashboardByDate } from '@/lib/db';
 import type { DashboardNumbers } from '@/lib/db';
@@ -191,7 +193,6 @@ export function ScheduleTab() {
   const connPaused = fsLive && feedStatus.connection === 'paused';
   const reservationsLearning = fsLive &&
     (connPending || feedStatus.feeds.arrivals === 'learning' || feedStatus.feeds.departures === 'learning');
-  const stripCountsLive = fsLive && !connPending && feedStatus.feeds.dashboardCounts === 'live';
 
   const flashToast = useCallback((msg: string) => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -319,7 +320,11 @@ export function ScheduleTab() {
   const totalMinutes = tasks.reduce((s, t) => s + t.estimated_minutes_resolved, 0);
   const recommendedHKs = Math.max(1, Math.ceil(totalMinutes / SHIFT_MINS)) + 1;
 
-  const today = useMemo(() => new Date().toLocaleDateString('en-CA'), []);
+  // The hotel's own calendar day, not the reader's laptop's. A manager opening
+  // this board from another timezone must see the same "today" the crew
+  // standing in the building does, or the Today button lands on the wrong day.
+  const propertyTz = activeProperty?.timezone || undefined;
+  const today = useTodayStr(propertyTz);
   const isToday = shiftDate === today;
   const isYesterday = shiftDate === addDays(today, -1);
   const isTomorrow = shiftDate === addDays(today, 1);
@@ -334,6 +339,16 @@ export function ScheduleTab() {
     ? formatPulledAt(pulledAtIso, lang)
     : ('no data');
   const pmsSummaryFailed = dashboardLoaded && dashboardNums === null;
+
+  // ── the in-house snapshot describes NOW, and only now ────────────────────
+  // pms_in_house_snapshot has no date dimension: it is one row per hotel,
+  // whatever the connection last saw. The board beside it moves with the
+  // Yesterday / Tomorrow arrows, and the counts did not — so a manager
+  // planning tomorrow's crew read "Board · tomorrow" over TODAY's In House,
+  // Arrivals and Departures, sitting in the same strip as tomorrow's real
+  // Checkouts and Stayovers. The rule lives in src/lib/pms/feed-status.ts with
+  // the rest of the "what may this number claim" family.
+  const stripCountsLive = snapshotCountsApplyTo(feedStatus, shiftDate, today);
 
   // ── Mutations ──────────────────────────────────────────────────────────
 
@@ -584,9 +599,9 @@ export function ScheduleTab() {
             // '—'. Checkout/stayover/recommended cells null out while the
             // reservation feeds are untrusted — a confident 0 there reads
             // as "nobody checks out today".
-            { l: 'In House',    v: stripCountsLive ? (feedStatus.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
-            { l: 'Arrivals',    v: stripCountsLive ? (feedStatus.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
-            { l: 'Departures',  v: stripCountsLive ? (feedStatus.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
+            { l: 'In House',    v: stripCountsLive ? (feedStatus?.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
+            { l: 'Arrivals',    v: stripCountsLive ? (feedStatus?.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
+            { l: 'Departures',  v: stripCountsLive ? (feedStatus?.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
             { l: 'Checkouts',   v: reservationsLearning ? null : checkouts,                loaded: currentBoardLoaded },
             { l: 'Stayovers',   v: reservationsLearning ? null : stayovers,                loaded: currentBoardLoaded },
             { l: 'Total time',  v: reservationsLearning ? null : fmtMinutes(totalMinutes), loaded: currentBoardLoaded },

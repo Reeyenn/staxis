@@ -58,9 +58,9 @@ const MODEL = 'claude-sonnet-4-6';
 // maxDuration. Now imported from external-service-config so it stays in
 // lockstep with the main agent's budget math.
 
-// Module-level singleton — matches the pattern in `src/lib/agent/llm.ts` and
-// `src/app/api/walkthrough/step/route.ts`. Re-instantiating `new Anthropic()`
-// per call burns a TLS handshake on every invoice scan.
+// Module-level singleton — matches the pattern in `src/lib/agent/llm.ts`.
+// Re-instantiating `new Anthropic()` per call burns a TLS handshake on every
+// invoice scan.
 /**
  * Client for the provider serving this attempt. Throws when that provider has
  * no key — the caller catches and 500s the route, which is right for vision:

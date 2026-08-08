@@ -541,7 +541,7 @@ describe('writing a company rule by talking', () => {
     )).rows[0];
     assert.ok(rule, 'the approval rule was not frozen');
     assert.equal(Number(rule.threshold_cents), 50_000);
-    assert.equal(rule.approver_role, 'vp');
+    assert.equal(rule.approver_role, 'regional_manager');
   });
 
   test('standing is re-checked at the write, not read off the proposal', async () => {
@@ -782,7 +782,7 @@ describe('approving what Staxis proposed, in the conversation', () => {
     // Written as SQL rather than through the chat because the RULE is the
     // fixture here and the GATE is what is under test; `create_work_order`
     // routes to the 'expense' kind (signoff.ts), which is what a repair is.
-    await seedAuthorityRule(ORG_B, { actionKind: 'expense', thresholdCents: 50_000, approverRole: 'vp' });
+    await seedAuthorityRule(ORG_B, { actionKind: 'expense', thresholdCents: 50_000, approverRole: 'regional_manager' });
 
     const findingId = await seedFinding(PID_B1, { dedupeKey: 'approve:locked', priceCents: [90_000, 120_000] });
     await attachWorkOrderOffer(PID_B1, findingId, 'Room 300');

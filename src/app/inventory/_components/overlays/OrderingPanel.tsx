@@ -631,6 +631,10 @@ export function GroupCard({
         </div>
       )}
 
+      {!canSendPurchaseOrders && !unmatched && !group.blocked && group.orderMethod === 'email' && (
+        <div style={chipBox(T.goldDim, T.goldText)}>{tx.emailNeedsManager}</div>
+      )}
+
       {!unmatched && !group.blocked && group.orderMethod === 'website' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>{tx.prepHint}</div>

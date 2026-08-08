@@ -126,14 +126,37 @@ export function taskVisibleToViewer(
   if (task.assignedStaffId) return task.assignedStaffId === viewer.staffId;
 
   // Handed to a role: everyone in that role, plus the two catch-alls.
+  //
+  // AND THEN IT FALLS THROUGH, which is the part that was missing. A department
+  // is not a person, so nobody was handed anything and nothing left anybody's
+  // plate — but this used to `return` the department match, which took the row
+  // off the author's list and off every manager's list at the same moment.
+  //
+  // What that produced: a GM types "Fix the ice machine" for Maintenance, the
+  // row saves, and it is on no screen the GM can reach. Not the list (this
+  // function had already refused it), not the Assigned-by-me panel
+  // (keepForAssigner drops a waiting department row on the stated grounds that
+  // "listing it as outstanding would just be the author's own list a second
+  // time" — a sentence that is only true if it IS on the author's list). At a
+  // hotel with nobody in that department, which is most limited-service hotels
+  // for maintenance, it reached zero screens in the product. The chat door does
+  // the same thing on its own: log_complaint's "Also add to the to-do list"
+  // files the follow-up to `maintenance` and says so out loud.
+  //
+  // So the department match is now one WAY IN rather than the only one, and the
+  // two clauses below apply to a department row exactly as they always did to
+  // an unassigned one. Handing work to a PERSON is untouched: that branch still
+  // returns above, so a delegated to-do still leaves the assigner's list, which
+  // is the founder's rule and the whole reason the drawer exists.
   if (task.assignedDepartment) {
     if (task.assignedDepartment === 'all_staff' || task.assignedDepartment === 'general') return true;
-    return task.assignedDepartment === viewerDepartment(viewer);
+    if (task.assignedDepartment === viewerDepartment(viewer)) return true;
   }
 
-  // Handed to nobody. It is the house's, so it is the manager's — and always
-  // the author's, so a to-do somebody typed for themselves through the chat
-  // door can never end up on nobody's screen.
+  // Handed to nobody, or to a department this person is not in. It is the
+  // house's, so it is the manager's — and always the author's, so a to-do
+  // somebody typed for themselves through the chat door can never end up on
+  // nobody's screen.
   if (task.createdByStaffId && task.createdByStaffId === viewer.staffId) return true;
   return worklistSeesApprovals(viewer.role);
 }
@@ -431,6 +454,10 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeName: assignedStaffId ? nameMap.get(assignedStaffId) ?? null : null,
       dept: (r.assigned_department as string | null) ?? null,
       dueDate: due,
+      // Already worked out above, in the hotel's own calendar. Carried so the
+      // month grid and the week strip do not have to re-derive it from the
+      // instant in the reader's timezone. See WorklistItem.dueDay.
+      dueDay,
       status: 'open',
       priority: normalizePriority((r.priority as string | null) ?? 'normal'),
       propertyId: pid,
@@ -596,6 +623,7 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeName: null,
       dept: null,
       dueDate: new Date(nextDueMs).toISOString(),
+      dueDay: propertyLocalToday(new Date(nextDueMs), tz),
       status: overdue ? 'overdue' : 'due_soon',
       priority: overdue ? 'high' : 'normal',
       propertyId: pid,
@@ -632,6 +660,9 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       assigneeName: targetStaffId ? nameMap.get(targetStaffId) ?? null : null,
       dept: targetDept,
       dueDate: fireAt,
+      dueDay: fireAt && Number.isFinite(Date.parse(fireAt))
+        ? propertyLocalToday(new Date(Date.parse(fireAt)), tz)
+        : null,
       status: 'pending',
       priority: 'normal',
       propertyId: pid,
@@ -698,6 +729,11 @@ export async function gatherWorklist(pid: string, opts: GatherOptions = {}): Pro
       // but still ended the day at 6:59pm in Texas, so a request for today went
       // red over dinner. endOfLocalDay ends it when the hotel's day ends.
       dueDate: day ? endOfLocalDay(day, tz).toISOString() : null,
+      // The day the request NAMES, straight off the row. The instant above is
+      // the end of that day at the hotel, and reading it back in the reader's
+      // own timezone is what put "Ana asked for the 14th off" on the 15th for
+      // anybody east of the hotel.
+      dueDay: day,
       status: 'pending',
       priority: 'normal',
       propertyId: pid,

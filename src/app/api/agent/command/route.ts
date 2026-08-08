@@ -1,6 +1,6 @@
 // ─── POST /api/agent/command ───────────────────────────────────────────────
-// The main entry point to the agent layer. Chat UI, Clicky walkthrough, and
-// portfolio chat call this with a user message and get back a streamed
+// The main entry point to the agent layer. The chat UI and the portfolio
+// chat call this with a user message and get back a streamed
 // SSE response with the model's tokens, tool calls, and final result.
 //
 // Codex adversarial review fixes (2026-05-13) wired in here:
@@ -44,6 +44,7 @@ import {
   ASK_STAXIS_FALLBACK_RESERVE_MS,
   agentFeatureKeyForOrigin,
   agentOriginFromRequest,
+  agentPlanFailureMessage,
   resolveAgentOriginExecutionPlan,
   streamAgent,
   type AgentMessage,
@@ -252,7 +253,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   } catch (error) {
     return Response.json({
       ok: false,
-      error: error instanceof Error ? error.message : 'Ask Staxis is unavailable',
+      error: agentPlanFailureMessage(error),
       requestId,
     }, { status: 503 });
   }

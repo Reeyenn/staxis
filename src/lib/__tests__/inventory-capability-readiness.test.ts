@@ -36,7 +36,7 @@ test('capability readiness is tagged to the resolved identity and hotel', () => 
   );
   assert.match(
     propertyContext,
-    /source: 'selector',[\s\S]*?\}\)\) return;[\s\S]*?setCapabilitySnapshot\(null\);[\s\S]*?setActivePropertyIdState\(id\)/,
+    /source: 'selector',[\s\S]*?\}\)\) return \{ ok: false, reason: 'blocked' \};[\s\S]*?setCapabilitySnapshot\(null\);[\s\S]*?setActivePropertyIdState\(id\)/,
   );
   assert.match(
     propertyContext,

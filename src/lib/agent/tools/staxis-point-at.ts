@@ -10,7 +10,7 @@
 // ─── WHY THIS TOOL READS NOTHING ───────────────────────────────────────────
 //
 // It is an acknowledgement, exactly like `staxis_show_pattern` and
-// `walk_user_through` next door, and for exactly the same reason: only the
+// `staxis_show_around` next door, and for exactly the same reason: only the
 // browser can do this. Where a control SITS is a fact about the window the
 // person has open, and a server that tried to answer it would be answering a
 // different question. So the browser takes it from here: AskStaxisBar hears
@@ -55,6 +55,7 @@ import { registerTool, type ToolResult } from '../tools';
 import {
   anchorFor,
   anchorIsReachable,
+  anchorMatchesPage,
   anchorsOnPage,
   type CompanionAnchorStanding,
 } from '@/lib/companion/anchors';
@@ -140,7 +141,20 @@ registerTool<PointAtArgs>({
     }
     // No screen proof, or the wrong screen. Either way the honest answer is
     // the same, and it is one the model can turn into a sentence.
-    if (!ctx.companionPage || ctx.companionPage !== target.page) {
+    // `anchorMatchesPage` rather than strict equality, because the registry now
+    // has a second tier: the app chrome (the pill bar, the mark in the corner)
+    // is on every screen the companion is allowed to exist on, and scoping it
+    // to one page would be a lie in seven places out of eight.
+    //
+    // It does NOT loosen the wall. A turn with no page proof is still refused,
+    // which is the half that matters: the portfolio route, the approval-resolve
+    // route and the eval harness all arrive with no screen behind them.
+    //
+    // This was wrong for one commit and the pinned test above caught it: the
+    // awareness block already names these keys on every screen, so the tool
+    // refusing them produced the exact failure this file's header is about, a
+    // confident "it is this one" with nothing drawn.
+    if (!anchorMatchesPage(target, ctx.companionPage)) {
       return {
         ok: false,
         error: 'That control is not on the screen they are looking at, so there is nothing to draw on. '

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
+import * as staffDb from '@/lib/db/staff';
 import { STAFF_COLS } from '@/lib/db/staff';
 
 const source = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
@@ -14,12 +15,25 @@ describe('staff phone privacy', () => {
     assert.ok(!cols.includes('phone_lookup'), `STAFF_COLS exposed phone_lookup: ${STAFF_COLS}`);
   });
 
-  test('generic browser writes strip phone as well as wage', () => {
-    const db = source('src/lib/db/staff.ts');
-    assert.match(db, /delete row\.phone;/);
-    assert.match(db, /delete row\.hourly_wage;/);
-    assert.match(db, /addStaffMember[\s\S]*stripPrivateWrites\(toStaffRow\(data\)\)/);
-    assert.match(db, /updateStaffMember[\s\S]*stripPrivateWrites\(toStaffRow\(data\)\)/);
+  test('the browser data layer offers no way to write a staff row at all', () => {
+    // Stronger than the old "the browser writer scrubs phone and wage" rule,
+    // and it replaces it. The browser writers used to be authorized ONLY by the
+    // RLS predicate staxis_user_can_manage_staff (migration 0334), which reads
+    // the legacy `accounts.role` + `accounts.property_access` globals that every
+    // server path here treats as non-authoritative — so a manager demoted by a
+    // company hat kept roster-edit power, including over `department`, which
+    // decides which comms channels and knowledge documents a person can reach.
+    // Roster writes belong to /api/staff/operational, phone to
+    // /api/staff/contacts, pay to /api/staff/wages.
+    const writers = Object.entries(staffDb)
+      .filter(([name, value]) => typeof value === 'function'
+        && /^(add|create|insert|update|save|set|delete|remove|archive|write)/i.test(name))
+      .map(([name]) => name);
+    assert.deepEqual(
+      writers,
+      [],
+      `src/lib/db/staff.ts must export no staff writer; found: ${writers.join(', ')}`,
+    );
   });
 
   test('contacts API requires manage_team and scopes reads and writes to the property', () => {
@@ -86,7 +100,8 @@ describe('staff phone privacy', () => {
     const ui = source('src/app/(hotel)/company/_components/PersonEmploymentForm.tsx');
     assert.match(ui, /const existingId = staffId \?\? createdIdRef\.current/);
     assert.match(ui, /createdIdRef\.current = newId/);
-    assert.match(ui, /existingId\s*\?\s*updateStaffMember[\s\S]*?:\s*addStaffMember/);
+    assert.match(ui, /method: existingId \? 'PUT' : 'POST'/);
+    assert.match(ui, /fetchWithAuth\('\/api\/staff\/operational', \{/);
     assert.match(ui, /if \(!existingId \|\| phoneTouched\) \{/);
 
     // The retry id may only be forgotten once every write has landed.

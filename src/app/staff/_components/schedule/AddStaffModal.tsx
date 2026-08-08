@@ -2,6 +2,8 @@
 //
 // Lists everyone on the property's roster who isn't already on the selected
 // day, grouped by department, each with their department's default shift.
+// Above the roster sits the one thing that isn't a person: "Post an open
+// shift", a slot anyone in the chosen department can claim from My Shifts.
 // Deliberately has NO in-modal "create staff" action — the footer links to
 // My Hotel → People instead (new hires are added there and show up here
 // automatically).
@@ -9,19 +11,23 @@
 'use client';
 
 import React, { useId, useState } from 'react';
-import type { ShiftPreset, StaffMember, TimeOffRequest } from '@/types';
-import { deptDefaultTimes, fmtHours, fmtMinRange } from '@/lib/schedule-board';
+import type { ShiftPreset, StaffDepartment, StaffMember, TimeOffRequest } from '@/types';
+import {
+  deptDefaultTimes, fmtHours, fmtMinRange, normalizeShiftEnd, toHHMM, toMin,
+} from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
 import { useStaffDialog } from '../useStaffDialog';
 import dialogStyles from '../StaffDialog.module.css';
 
 const DEFAULT_WEEKLY_CAP = 40;
+const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
+const OPEN_LANES: DeptKey[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
 
 export function AddStaffModal({
   staff, takenIds, presets, dayTitle, dayPhrase, lang,
   weekMinutes, approvedTorByStaff,
-  onPick, onOpenPeople, onClose,
+  onPick, onCreateOpen, onOpenPeople, onClose,
 }: {
   staff: StaffMember[];
   takenIds: Set<string>;
@@ -36,14 +42,23 @@ export function AddStaffModal({
   /** Approved time-off requests landing on this exact day, per staff. */
   approvedTorByStaff: Map<string, TimeOffRequest>;
   onPick: (s: StaffMember, opts?: { overrideTimeOff?: boolean }) => void;
+  /** Post a slot with nobody on it. Absent → the option is not offered. */
+  onCreateOpen?: (input: {
+    department: StaffDepartment;
+    startMin: number;
+    endMin: number;
+    note: string | null;
+  }) => Promise<void> | void;
   onOpenPeople?: () => void;
   onClose: () => void;
 }) {
   // Picking someone with approved time off that day asks first.
   const [confirmFor, setConfirmFor] = useState<StaffMember | null>(null);
+  const [openFormShown, setOpenFormShown] = useState(false);
   const titleId = useId();
   const dialogRef = useStaffDialog(() => {
     if (confirmFor) setConfirmFor(null);
+    else if (openFormShown) setOpenFormShown(false);
     else onClose();
   });
 
@@ -105,9 +120,24 @@ export function AddStaffModal({
         </div>
 
         <div style={{ overflowY: 'auto', padding: '10px 14px 6px' }}>
+          {onCreateOpen && (
+            <OpenShiftComposer
+              presets={presets}
+              dayPhrase={dayPhrase}
+              shown={openFormShown}
+              onShow={() => setOpenFormShown(true)}
+              onHide={() => setOpenFormShown(false)}
+              onCreate={onCreateOpen}
+            />
+          )}
           {groups.length === 0 && (
             <div style={{ padding: '24px 12px', textAlign: 'center', color: T.ink3, fontSize: 13 }}>
               {'Everyone on the roster is already on this day.'}
+            </div>
+          )}
+          {groups.length > 0 && onCreateOpen && (
+            <div style={{ padding: '10px 10px 2px' }}>
+              <Caps size={9} c={T.ink3}>{'Or put someone on it now'}</Caps>
             </div>
           )}
           {groups.map(g => {
@@ -237,3 +267,190 @@ export function AddStaffModal({
     </div>
   );
 }
+
+// ── Open-shift composer ───────────────────────────────────────────────────
+// Collapsed to one line until asked for, so the roster stays the fast path.
+// Department + times + optional note, mirroring what adding a person asks:
+// picking a department is what decides who can claim it.
+function OpenShiftComposer({
+  presets, dayPhrase, shown, onShow, onHide, onCreate,
+}: {
+  presets: ShiftPreset[];
+  dayPhrase: string;
+  shown: boolean;
+  onShow: () => void;
+  onHide: () => void;
+  onCreate: (input: {
+    department: StaffDepartment;
+    startMin: number;
+    endMin: number;
+    note: string | null;
+  }) => Promise<void> | void;
+}) {
+  const [dept, setDept] = useState<DeptKey>('housekeeping');
+  const [start, setStart] = useState(() => toHHMM(deptDefaultTimes('housekeeping', presets).s));
+  const [end, setEnd] = useState(() => toHHMM(deptDefaultTimes('housekeeping', presets).e));
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const deptId = useId();
+  const startId = useId();
+  const endId = useId();
+  const noteId = useId();
+  const errorId = useId();
+
+  const pickDept = (next: DeptKey) => {
+    setDept(next);
+    const def = deptDefaultTimes(next, presets);
+    setStart(toHHMM(def.s));
+    setEnd(toHHMM(def.e));
+    setErrorMsg(null);
+  };
+
+  const submit = async () => {
+    if (!TIME_RE.test(start.trim()) || !TIME_RE.test(end.trim())) {
+      setErrorMsg('Use HH:MM, e.g. 08:00');
+      return;
+    }
+    const s = toMin(start.trim());
+    const endClock = toMin(end.trim());
+    if (endClock === s) {
+      setErrorMsg('Start and end cannot be the same');
+      return;
+    }
+    setBusy(true);
+    setErrorMsg(null);
+    try {
+      await onCreate({
+        department: dept,
+        startMin: s,
+        endMin: normalizeShiftEnd(s, endClock),
+        note: note.trim() ? note.trim().slice(0, 300) : null,
+      });
+    } catch (e) {
+      setBusy(false);
+      setErrorMsg(e instanceof Error ? e.message : 'Could not post the open shift');
+    }
+  };
+
+  if (!shown) {
+    return (
+      <button
+        type="button"
+        onClick={onShow}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', gap: 11,
+          padding: '11px 10px', borderRadius: 12, marginBottom: 4,
+          border: `1px dashed ${T.caramelDeep}`, background: 'rgba(201,150,68,0.06)',
+          cursor: 'pointer', textAlign: 'left', minHeight: 44,
+        }}
+      >
+        <span aria-hidden="true" style={{
+          width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
+          border: `1px dashed ${T.caramelDeep}`, color: T.caramelDeep,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: fonts.sans, fontSize: 15, fontWeight: 700,
+        }}>?</span>
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: T.ink }}>
+            {'Post an open shift'}
+          </span>
+          <span style={{ display: 'block', fontFamily: fonts.mono, fontSize: 10, color: T.ink3 }}>
+            {'Anyone in the department can pick it up'}
+          </span>
+        </span>
+        <span style={{
+          fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
+          color: T.caramelDeep, whiteSpace: 'nowrap', flexShrink: 0,
+        }}>{'Post →'}</span>
+      </button>
+    );
+  }
+
+  return (
+    <div style={{
+      padding: '12px 12px 14px', borderRadius: 12, marginBottom: 8,
+      border: `1px dashed ${T.caramelDeep}`, background: 'rgba(201,150,68,0.06)',
+    }}>
+      <Caps size={9} c={T.caramelDeep}>{'Open shift'}</Caps>
+      <div style={{ fontSize: 11.5, color: T.ink2, lineHeight: 1.5, margin: '4px 0 10px' }}>
+        {`Nobody is on it. Anyone in the department sees it on ${dayPhrase} and can claim it.`}
+      </div>
+
+      <label htmlFor={deptId}><Caps size={9}>{'Department'}</Caps></label>
+      <select
+        id={deptId}
+        value={dept}
+        onChange={e => pickDept(e.target.value as DeptKey)}
+        style={{ ...openInputStyle, marginTop: 6 }}
+      >
+        {OPEN_LANES.map(d => (
+          <option key={d} value={d}>{deptMeta[d].label}</option>
+        ))}
+      </select>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+        <div>
+          <label htmlFor={startId}><Caps size={9}>{'Start'}</Caps></label>
+          <input
+            id={startId}
+            value={start}
+            onChange={e => { setStart(e.target.value); setErrorMsg(null); }}
+            placeholder="08:00"
+            aria-invalid={errorMsg ? true : undefined}
+            aria-describedby={errorMsg ? errorId : undefined}
+            style={{ ...openInputStyle, fontFamily: fonts.mono, marginTop: 6 }}
+          />
+        </div>
+        <div>
+          <label htmlFor={endId}><Caps size={9}>{'End'}</Caps></label>
+          <input
+            id={endId}
+            value={end}
+            onChange={e => { setEnd(e.target.value); setErrorMsg(null); }}
+            placeholder="16:00"
+            aria-invalid={errorMsg ? true : undefined}
+            aria-describedby={errorMsg ? errorId : undefined}
+            style={{ ...openInputStyle, fontFamily: fonts.mono, marginTop: 6 }}
+          />
+        </div>
+      </div>
+      <div style={{ marginTop: 5, fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.04em' }}>
+        {'24h clock'}
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <label htmlFor={noteId}><Caps size={9}>{'Note (optional)'}</Caps></label>
+        <input
+          id={noteId}
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          placeholder={'e.g. extra coverage for the tour group'}
+          maxLength={300}
+          style={{ ...openInputStyle, marginTop: 6 }}
+        />
+      </div>
+
+      {errorMsg && (
+        <div id={errorId} role="alert" style={{
+          marginTop: 10, padding: '9px 13px', background: 'rgba(184,92,61,0.08)',
+          border: '1px solid rgba(184,92,61,0.25)', borderRadius: 10,
+          color: T.red, fontSize: 12.5,
+        }}>{errorMsg}</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+        <Btn variant="ghost" size="sm" onClick={onHide} disabled={busy}>{'Cancel'}</Btn>
+        <Btn variant="primary" size="sm" onClick={() => { void submit(); }} disabled={busy}>
+          {busy ? ('Posting…') : ('Post open shift')}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+const openInputStyle: React.CSSProperties = {
+  width: '100%', boxSizing: 'border-box',
+  padding: '9px 12px', borderRadius: 10, border: `1px solid ${T.rule}`,
+  background: T.paper, fontFamily: fonts.sans, fontSize: 13, color: T.ink, outline: 'none',
+};

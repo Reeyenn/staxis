@@ -19,7 +19,8 @@ describe('staff schedule hardening contracts', () => {
       'src/app/api/staff-schedule/presets/route.ts': 1,
       'src/app/api/staff-schedule/shifts/route.ts': 2,
       'src/app/api/staff-schedule/templates/route.ts': 2,
-      'src/app/api/staff-schedule/time-off/route.ts': 2,
+      // POST (staff submit), DELETE (staff self-cancel), PUT (manager decide).
+      'src/app/api/staff-schedule/time-off/route.ts': 3,
       'src/app/api/staff-schedule/week-done/route.ts': 1,
     };
     for (const [path, expected] of Object.entries(expectedCalls)) {

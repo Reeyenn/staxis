@@ -11,11 +11,29 @@
  * day. This computes the real numbers on demand from the schedule, so callers
  * can overlay them onto the staff objects before running the caps.
  *
- * "This week" = a rolling 7-day window ENDING at the target date (matches the
- * dashboard labor-cost window). Only real assigned shifts the staffer hasn't
- * declined count.
+ * ── THE TARGET DATE IS NOT PART OF THE LOAD (fixed 2026-08-07) ─────────────
+ * The window used to be the 7 days ENDING AT `targetDate`, inclusive. That
+ * double-counted the very day the caller is asking about, and because both
+ * caps compare with `>=` it produced a guaranteed off-by-one:
+ *
+ *   A housekeeper scheduled the ordinary Mon–Fri, 8h a day, hits
+ *   days = 5 (>= the default max_days_per_week of 5) AND hours = 40
+ *   (>= the default max_weekly_hours of 40) ON FRIDAY — the fifth day, which
+ *   is inside her limit, not past it. checkCrewEligibility excluded her with
+ *   `weekly_day_cap_reached`, so the nightly auto-fill gave her no rooms.
+ *   With a whole crew on that schedule the cron returned `skipped_no_crew`
+ *   and assigned nothing at all, every Friday.
+ *
+ * Both callers ask the same question — "should this person be given MORE work
+ * ON targetDate?" — and on that date her shift already exists and is not
+ * something the caller can add or remove. So the honest denominator is what she
+ * is committed to on the OTHER days of the window: the six days before
+ * `targetDate`. `daysWorked >= maxDays` then reads correctly as "targetDate
+ * would be one day too many", and 40h across Mon–Fri correctly excludes her
+ * from a SIXTH day on Saturday instead of from Friday itself.
+ *
+ * Only real assigned shifts the staffer hasn't declined count.
  */
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { shiftMinutes } from '@/lib/labor-cost';
 import { addDaysInTz } from '@/lib/schedule/local-date';
 
@@ -31,6 +49,26 @@ export interface WeeklyLoadShiftRow {
   shift_date: string | null;
   start_time: string | null;
   end_time: string | null;
+}
+
+/** Inclusive shift_date bounds of the "already committed" window. */
+export interface WeeklyLoadWindow {
+  start: string;
+  end: string;
+}
+
+/**
+ * The six days BEFORE `targetDate`, inclusive on both ends.
+ *
+ * `targetDate` itself is deliberately absent — see the header. Together with
+ * the day being decided this still spans seven days, which is what the caps are
+ * denominated in.
+ */
+export function weeklyLoadWindow(targetDate: string): WeeklyLoadWindow {
+  return {
+    start: addDaysInTz(targetDate, -6),
+    end: addDaysInTz(targetDate, -1),
+  };
 }
 
 /** Pure aggregation core (no DB) so the math is unit-testable. */
@@ -52,28 +90,53 @@ export function aggregateWeeklyLoad(rows: ReadonlyArray<WeeklyLoadShiftRow>): Ma
 }
 
 /**
- * Load the committed weekly hours + days for every housekeeper at a property,
- * for the 7-day window ending at `targetDate` (YYYY-MM-DD, property-local).
- * Returns an empty map on error so callers degrade to "no known load" (the
- * cap simply doesn't fire) rather than crashing the schedule build.
+ * The one DB read this module needs. Injectable so a test can exercise the real
+ * async path — including which window it asks for — without a database.
+ */
+export interface WeeklyLoadReader {
+  shiftsInWindow(
+    propertyId: string,
+    window: WeeklyLoadWindow,
+  ): Promise<WeeklyLoadShiftRow[]>;
+}
+
+/** Service-role reader. The supabase-admin import is deferred so this module
+ *  stays importable (and testable) without env vars — that module throws at
+ *  load time by design when they're missing. */
+export function createSupabaseWeeklyLoadReader(): WeeklyLoadReader {
+  return {
+    async shiftsInWindow(propertyId, window) {
+      const { supabaseAdmin } = await import('@/lib/supabase-admin');
+      const { data, error } = await supabaseAdmin
+        .from('scheduled_shifts')
+        .select('staff_id, shift_date, start_time, end_time')
+        .eq('property_id', propertyId)
+        .eq('kind', 'shift')
+        .neq('status', 'declined')
+        .not('staff_id', 'is', null)
+        .gte('shift_date', window.start)
+        .lte('shift_date', window.end);
+      if (error) throw new Error(`scheduled_shifts read failed: ${error.message}`);
+      return (data ?? []) as unknown as WeeklyLoadShiftRow[];
+    },
+  };
+}
+
+/**
+ * Load the weekly hours + days each housekeeper is ALREADY committed to on the
+ * six days before `targetDate` (YYYY-MM-DD, property-local).
+ *
+ * Returns an empty map on error so callers degrade to "no known load" (the cap
+ * simply doesn't fire) rather than crashing the schedule build.
  */
 export async function computeWeeklyLoadByStaff(
   propertyId: string,
   targetDate: string,
+  reader: WeeklyLoadReader = createSupabaseWeeklyLoadReader(),
 ): Promise<Map<string, WeeklyLoad>> {
-  const windowStart = addDaysInTz(targetDate, -6);
   try {
-    const { data, error } = await supabaseAdmin
-      .from('scheduled_shifts')
-      .select('staff_id, shift_date, start_time, end_time')
-      .eq('property_id', propertyId)
-      .eq('kind', 'shift')
-      .neq('status', 'declined')
-      .not('staff_id', 'is', null)
-      .gte('shift_date', windowStart)
-      .lte('shift_date', targetDate);
-    if (error || !data) return new Map();
-    return aggregateWeeklyLoad(data as WeeklyLoadShiftRow[]);
+    const rows = await reader.shiftsInWindow(propertyId, weeklyLoadWindow(targetDate));
+    return aggregateWeeklyLoad(rows);
   } catch {
     return new Map();
   }

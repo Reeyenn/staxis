@@ -55,26 +55,29 @@ export function isAssignable(staff: AssignableStaffRow | null | undefined): bool
 }
 
 /**
- * Why a to-do cannot be routed to this DEPARTMENT, or null if it can.
+ * Why this DEPARTMENT cannot be handed a to-do, or null if it can.
  *
- * The same rule as `assigneeBlockedReason`, one level up. Naming a person was
- * already guarded; naming their whole department was not, and it is the worse
- * half of the two: a department row is delivered to every viewer IN that
- * department (worklist/core.ts) and to nobody else, and it is held out of the
- * author's own drawer until somebody else settles it. Route one at housekeeping
- * and it exists on exactly zero screens, forever, under a success receipt.
+ * The same rule as `assigneeBlockedReason`, one door along, and the door that
+ * was standing open. Naming a housekeeper by id has been refused at every write
+ * seam since the rule was written; routing to the housekeeping DEPARTMENT was
+ * refused nowhere. `comms_tasks.assigned_department` accepts 'housekeeping'
+ * (the CHECK in 0302 lists it), the to-do POST's own enum lists it, the chat
+ * tool's enum lists it and the recurring template's enum lists it — and not one
+ * of them asked whether anybody on that department ever opens the list. They do
+ * not: `listStandingFor` gives a housekeeper NO Staxis page at all, and nothing
+ * on the housekeeping board reads `comms_tasks`. So the row was created, a 201
+ * came back with its id, and the work reached zero screens.
  *
- * The composer never offered housekeeping as a target (COMPOSER_ROLES), so this
- * closes the doors that bypass it: the AI's create_todo and its recurring
- * sibling, which spawns a fresh invisible row every day it is due.
+ * A recurring template makes it worse by exactly the amount the assignee
+ * version warned about: it manufactures one fresh invisible row every day for
+ * as long as it lives.
  *
- * Says what to do instead, because the caller relays this to a person.
+ * The sentence is the same one a named housekeeper gets, because the answer is
+ * the same: put it on their board.
  */
 export function departmentBlockedReason(department: string | null | undefined): string | null {
   if ((department ?? null) !== NON_ASSIGNABLE_DEPARTMENT) return null;
-  return 'Housekeepers work from the housekeeping board and never open the to-do list, '
-    + 'so a to-do routed to the housekeeping department would reach nobody. '
-    + 'Hand it to a named person instead, or leave it unassigned so it sits on the shared list.';
+  return 'Housekeepers work from the housekeeping board and never see the to-do list, so this would never reach them. Put it on their board instead.';
 }
 
 /**

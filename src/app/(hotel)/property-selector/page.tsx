@@ -36,6 +36,11 @@ import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-relia
 import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
 import { usePortfolio } from '@/contexts/PortfolioContext';
 import { shouldWaitForPortfolioBootstrapResult } from '@/lib/portfolio-ui/entry-routing';
+import {
+  companyEntryDestination,
+  companyScopeHref,
+} from '@/lib/portfolio-ui/acting-scope';
+import { signOutAndNavigateToSignin } from '@/lib/auth/sign-out-navigation';
 
 import JoinStatusGate from '@/app/property-selector/JoinStatusGate';
 import {
@@ -44,7 +49,11 @@ import {
   type CommandCenterPayload,
   type PickerHotel,
 } from '@/app/property-selector/CommandCenter';
-import { authorizedCompanySelection, companyBootstrapPath } from '@/app/property-selector/company-selection';
+import {
+  authorizedCompanySelection,
+  companyBootstrapPath,
+  shouldAutoEnterSingleHotel,
+} from '@/app/property-selector/company-selection';
 
 function Spinner() {
   return (
@@ -110,6 +119,7 @@ export default function PropertySelectorPage() {
   );
 
   const hotels = data?.hotels ?? [];
+  const exactCompanyHat = data?.hasCompanyHat === true;
   const requiresCompanySelection = Boolean(
     data && !data.company && (data.requiresCompanySelection || data.companies.length > 1),
   );
@@ -128,6 +138,12 @@ export default function PropertySelectorPage() {
     setCompanyRouteChecked(false);
     setSelectedOrganizationId(authorized);
   }, [data?.companies, selectedOrganizationId]);
+
+  const openCompany = useCallback((organizationId: string) => {
+    const authorized = authorizedCompanySelection(data?.companies ?? [], organizationId);
+    if (!authorized) return;
+    replaceNavigation(companyScopeHref('/home', authorized));
+  }, [data?.companies, replaceNavigation]);
 
   // Route into the app — UNLESS this property's onboarding isn't finished, in
   // which case keep the owner in the wizard (a half-onboarded hotel has no PMS
@@ -170,26 +186,28 @@ export default function PropertySelectorPage() {
   // entirely. A company person with one hotel keeps the command centre: their
   // queue and their ask line are the reason they opened Staxis, not the door.
   useEffect(() => {
-    if (!data || data.company || requiresCompanySelection) return;
-    if (data.hotels.length === 1) enter(data.hotels[0]);
-  }, [data, enter, requiresCompanySelection]);
+    if (!data || !shouldAutoEnterSingleHotel({
+      exactCompanyHat,
+      hotelCount: data.hotels.length,
+      hasSelectedCompany: Boolean(data.company),
+      requiresCompanySelection,
+    })) return;
+    enter(data.hotels[0]);
+  }, [data, enter, exactCompanyHat, requiresCompanySelection]);
 
   // The role-aware entry resolver owns the first acting-context decision.
-  // Company leaders enter Portfolio Home (or the company/context chooser)
-  // without first selecting a hotel; hotel-only users keep this exact picker.
+  // Company leaders enter THE APP in company scope, not a separate portfolio
+  // world: one authorized company lands on Home in that scope, several land on
+  // Home and pick from the switcher. Hotel-only users keep this exact picker.
   useEffect(() => {
+    if (!data || exactCompanyHat) return;
     if (authLoading || !user || user.role === 'admin' || portfolio.loading) return;
-    const selection = portfolio.data?.selection;
-    if (!selection) return;
-    if (selection.state === 'selected' && selection.selectedOrganizationId) {
-      replaceNavigation(
-        `/portfolio?organizationId=${encodeURIComponent(selection.selectedOrganizationId)}`,
-      );
-    } else if (selection.state === 'needs_selection') {
-      replaceNavigation('/portfolio/choose');
-    }
+    const destination = companyEntryDestination(portfolio.data?.selection);
+    if (destination) replaceNavigation(destination);
   }, [
     authLoading,
+    data,
+    exactCompanyHat,
     portfolio.data?.selection,
     portfolio.loading,
     replaceNavigation,
@@ -243,7 +261,7 @@ export default function PropertySelectorPage() {
       sessionStorage.removeItem('hotelops-session-selected');
       sessionStorage.removeItem(RESUME_GUARD_KEY);
     } catch { /* sign-out must continue when storage is blocked */ }
-    await signOut();
+    await signOutAndNavigateToSignin(signOut);
   }, [signOut]);
 
   // A failed read is NOT "you have no hotels". It says so and offers a retry —
@@ -289,12 +307,19 @@ export default function PropertySelectorPage() {
   const settling = authLoading
     || !user
     || !data
-    || (user.role !== 'admin' && portfolioBootstrapPending)
-    || portfolio.data?.selection.state === 'selected'
-    || portfolio.data?.selection.state === 'needs_selection'
+    || (!exactCompanyHat && user.role !== 'admin' && portfolioBootstrapPending)
+    || (!exactCompanyHat && (
+      portfolio.data?.selection.state === 'selected'
+      || portfolio.data?.selection.state === 'needs_selection'
+    ))
     // A single-hotel person is mid-redirect; showing them the door they are
     // already walking through would be a flash of a screen they never chose.
-    || (!requiresCompanySelection && !data.company && data.hotels.length === 1)
+    || shouldAutoEnterSingleHotel({
+      exactCompanyHat,
+      hotelCount: data?.hotels.length ?? 0,
+      hasSelectedCompany: Boolean(data?.company),
+      requiresCompanySelection,
+    })
     || (!requiresCompanySelection
       && hotels.length === 0
       && user.role !== 'admin'
@@ -315,6 +340,7 @@ export default function PropertySelectorPage() {
       payload={data}
       lang={lang}
       onOpenHotel={enter}
+      onOpenCompany={openCompany}
       onSelectCompany={selectCompany}
       onSignOut={handleSignOut}
     />

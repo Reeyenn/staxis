@@ -49,9 +49,10 @@ import { AssistantMarkdown } from './AssistantMarkdown';
 import { AiActivityButton } from './AiActivityButton';
 import { PeekTail, PEEK_TAIL_CSS } from './PeekTail';
 import { FeedbackButton } from '@/components/layout/FeedbackButton';
-import { useCompanion } from '@/components/companion/useCompanion';
+import { showingReplies, useCompanion } from '@/components/companion/useCompanion';
 import { TraceLayer } from '@/components/companion/TraceLayer';
 import { PointerPopup } from '@/components/companion/PointerPopup';
+import { TourGuide } from '@/components/companion/TourGuide';
 import { anchorFor, type CompanionAnchor } from '@/lib/companion/anchors';
 import {
   companionLabels,
@@ -74,6 +75,7 @@ import {
   type AssignmentNotice,
 } from '@/lib/companion/notices';
 import { pageForPath, resolveDestination, type CompanionPage } from '@/lib/companion/pages';
+import { COMPANION_REPLIES_MAX, type CompanionReply } from '@/lib/companion/replies';
 import {
   clampDockPosition,
   containScroll,
@@ -492,11 +494,20 @@ export function AskStaxisBar() {
   const peekKey = companion.peek?.text ?? null;
 
   const liveOffer = companion.liveOffer;
-  const offerActions = liveOffer?.actions ?? [];
+  // THE SHOWING'S replies, not the stored offer's.
+  //
+  // The two agree (the server derives the offer's set from the same table), but
+  // the showing is the one that exists BEFORE the round trip comes back, and a
+  // peek whose buttons appear half a second after its sentence is a peek people
+  // press through. The stored set is the fallback for the window where the
+  // showing has been cleared but the turn is still live.
+  const offerReplies = showingReplies(companion.showing).length > 0
+    ? showingReplies(companion.showing)
+    : (liveOffer?.replies ?? []);
   // A pill carrying buttons is a question, and a question that withdraws itself
   // while you are reading it has answered itself No on your behalf. See
   // peekPersists for the whole argument.
-  const peekStays = peekPersists({ hasActions: offerActions.length > 0 });
+  const peekStays = peekPersists({ hasActions: offerReplies.length > 0 });
 
   useEffect(() => {
     if (!shouldAutoPeek({
@@ -637,15 +648,26 @@ export function AskStaxisBar() {
     };
   }, [open, menuOpen, mobileOpen, noticesOpen, closeMobile, closePanel]);
 
-  // A walkthrough (Clicky-style cursor demo) takes over the screen, and a route
-  // change replaces the page under it. Both close the panel OUTRIGHT rather
-  // than through the Sink: an exit animation belongs to a person dismissing
-  // something, not to the screen being taken away from them.
+  // ── "show me around" ─────────────────────────────────────────────────────
+  //
+  // The third of the three companion tools that are acknowledgements on the
+  // server and real work here, for the same reason as the other two: the tour
+  // points at controls in a window nothing on the server can see, and half its
+  // stops wait for the person to use one.
+  //
+  // The panel closes OUTRIGHT rather than through the Sink. An exit animation
+  // belongs to a person dismissing something; this is the screen being handed
+  // over to the thing they just asked for.
   useEffect(() => {
-    const handler = () => { setOpen(false); setClosing(false); setMenuOpen(false); };
-    window.addEventListener('walkthrough:start', handler);
-    return () => window.removeEventListener('walkthrough:start', handler);
-  }, []);
+    const onToolCall = (e: Event) => {
+      const detail = (e as CustomEvent<{ call?: { name?: string } }>).detail;
+      if (detail?.call?.name !== 'staxis_show_around') return;
+      setOpen(false); setClosing(false); setMenuOpen(false);
+      companion.tour.start();
+    };
+    window.addEventListener('agent:tool-call-started', onToolCall);
+    return () => window.removeEventListener('agent:tool-call-started', onToolCall);
+  }, [companion]);
 
   // Route change closes the panel. The conversation itself persists.
   useEffect(() => {
@@ -687,9 +709,9 @@ export function AskStaxisBar() {
   // ── "actually, show me that AC thing" ────────────────────────────────────
   //
   // The chat's way back into an offer. `staxis_show_pattern` is an
-  // acknowledgement on the server — like walk_user_through, the real work can
-  // only happen here, because only the browser knows which screen is under the
-  // conversation and where the rows sit on it.
+  // acknowledgement on the server, like the pointer and the tour beside it: the
+  // real work can only happen here, because only the browser knows which screen
+  // is under the conversation and where the rows sit on it.
   //
   // Read-only tools are the only ones that reach this event at all (mutations
   // go through the approval card instead), which is why the tool writes
@@ -1040,12 +1062,16 @@ export function AskStaxisBar() {
 
       {menuOpen && (
         <div className="asx-menu" role="menu">
-          {companion.tour.length > 0 && (
+          {/* Never spent. A No on day one stops the OFFER and nothing else:
+              "I said no on my first morning" and "I never want to see this"
+              are different sentences, and only the person gets to say the
+              second one. See `tourIsReachable` in manners.ts. */}
+          {companion.tour.available && (
             <button
               type="button"
               role="menuitem"
               className="asx-menurow"
-              onClick={() => { setMenuOpen(false); closePanel(); companion.startTour(); }}
+              onClick={() => { setMenuOpen(false); closePanel(); companion.tour.start(); }}
             >
               {labels.showMeAround}
             </button>
@@ -1088,12 +1114,12 @@ export function AskStaxisBar() {
               <CompanionBlock
                 lines={[
                   showing.speech.kind === 'welcome' ? showing.speech.greeting : showing.speech.sentence,
+                  // Null on every kind that asks nothing. The block drops it.
                   showing.question,
                 ]}
-                yesLabel={labels.yes}
-                noLabel={labels.no}
-                onYes={companion.answerYes}
-                onNo={companion.answerNo}
+                replies={showing.replies}
+                escape={companion.escape}
+                onReply={companion.answer}
                 onQuiet={companion.quiet}
                 quietLabel={labels.quietForNow}
               />
@@ -1102,38 +1128,33 @@ export function AskStaxisBar() {
               <CompanionBlock
                 lines={[showing.text]}
                 example={showing.example}
-                yesLabel={labels.yes}
-                noLabel={labels.dismiss}
-                onYes={companion.answerYes}
-                onNo={companion.dismiss}
+                replies={showing.replies}
+                onReply={companion.answer}
                 onQuiet={companion.quiet}
                 quietLabel={labels.quietForNow}
               />
             )}
             {/* The batched notices line. One utterance about however many
                 things landed, with somewhere to go and a way to close it. It
-                is a message rather than a question, so a No records nothing:
+                is a message rather than a question, so a close records nothing:
                 see the no-topic note in useCompanion. */}
             {showing.kind === 'notices' && (
               <CompanionBlock
                 lines={[showing.line]}
-                yesLabel={labels.showNotices}
-                noLabel={labels.dismiss}
-                onYes={companion.answerYes}
-                onNo={companion.answerNo}
+                replies={showing.replies}
+                onReply={companion.answer}
               />
             )}
+            {/* Arriving somewhere the companion walked you to. It used to
+                carry the tour's "Next: Dashboard" button, because the tour WAS
+                a sequence of walks. It is not any more: a tour stop is a card
+                beside a control with its own Next, so this is back to being
+                one sentence about one screen, with nothing to answer. */}
             {showing.kind === 'arrived' && (
               <CompanionBlock
                 lines={[showing.line]}
-                yesLabel={
-                  companion.tourStep !== null && companion.tourStep + 1 < companion.tour.length
-                    ? `Next: ${companion.tour[companion.tourStep + 1].label}`
-                    : null
-                }
-                noLabel={labels.close}
-                onYes={companion.nextTourStep}
-                onNo={companion.dismiss}
+                replies={showing.replies}
+                onReply={companion.answer}
               />
             )}
             {/* The one thing that may only be said to somebody who opened this
@@ -1142,10 +1163,8 @@ export function AskStaxisBar() {
             {showing.kind === 'none' && companion.trace.panelAsk && (
               <CompanionBlock
                 lines={[companion.trace.panelAsk.sentence]}
-                yesLabel={labels.yes}
-                noLabel={labels.no}
-                onYes={companion.trace.acceptPanelAsk}
-                onNo={companion.trace.declinePanelAsk}
+                replies={companion.trace.panelAsk.replies}
+                onReply={companion.trace.answerPanelAsk}
                 onQuiet={companion.quiet}
                 quietLabel={labels.quietForNow}
               />
@@ -1472,6 +1491,19 @@ export function AskStaxisBar() {
         />
       )}
 
+      {/* ── The tour ── the same card and the same anchors, one stop at a
+          time, with a cursor that flies between them. It points and it waits;
+          the person does every action. Rendered here rather than at the root
+          layout because this is where the companion's brain already lives, and
+          the tour is the companion speaking. */}
+      {companion.tour.run && (
+        <TourGuide
+          run={companion.tour.run}
+          onNext={companion.tour.next}
+          onSkip={companion.tour.skip}
+        />
+      )}
+
       {/* ── The peek ── one clause, no click, aria-hidden: the same sentence
           is the panel's first line, so a screen reader meets it there. */}
       {peekVisible && peek && (
@@ -1514,17 +1546,20 @@ export function AskStaxisBar() {
           </span>
           {peekStays && liveOffer && (
             <span className="asx-peek-acts">
-              {offerActions.map((action, i) => (
+              {/* ─── EVERY BUTTON DOES ITS OWN THING NOW ───────────────
+                  This used to send every non-`no` tap to answerYes, which meant
+                  a pill could show three buttons and run one of them whichever
+                  was pressed. The tap reports an ID and the hook resolves the
+                  intent, so "It is done" and "Somebody's been called" are two
+                  different answers here exactly as they are on the card. */}
+              {offerReplies.map((reply) => (
                 <button
-                  key={`${action.kind}-${i}`}
+                  key={reply.id}
                   type="button"
-                  className={`asx-peek-btn${action.kind === 'no' ? '' : ' asx-peek-btn-yes'}`}
-                  onClick={() => {
-                    if (action.kind === 'no') companion.answerNo();
-                    else companion.answerYes();
-                  }}
+                  className={`asx-peek-btn${reply.intent.kind === 'close' ? '' : ' asx-peek-btn-yes'}`}
+                  onClick={() => companion.answer(reply.id)}
                 >
-                  {action.label}
+                  {reply.label}
                 </button>
               ))}
               {/* Waved away rather than answered. Counted by the manners ledger
@@ -1558,6 +1593,11 @@ export function AskStaxisBar() {
           type="button"
           className={`asx-mark asx-${markState}${dragging ? ' asx-dragging' : ''}`
             + `${markWaiting ? ' asx-waiting' : ''}`}
+          // The one control the tour's last stop points at, and the only
+          // anchor on a companion surface. It is deliberately not a
+          // `data-staxis-surface`: that attribute marks space the pointer must
+          // avoid landing ON, and the mark is a button somebody presses.
+          {...{ 'data-staxis-anchor': 'staxis-mark' }}
           aria-label="Ask Staxis"
           aria-expanded={open}
           aria-controls="staxis-panel"
@@ -1610,33 +1650,65 @@ function scrollerFor(target: EventTarget | null, slab: HTMLElement): HTMLElement
 }
 
 // ── The companion's one thing, inside the panel ───────────────────────────
+//
+// ─── IT RENDERS A LIST NOW, AND THAT IS THE POINT ──────────────────────────
+//
+// This used to take `yesLabel` and `noLabel` and hardcode two buttons. That
+// signature is what forced every companion sentence to be a yes/no question:
+// the renderer could only draw two, so the copy had to fit two, so a statement
+// about a fire panel got "Want me to take you to Staxis?" and a Yes.
+//
+// It now walks whatever `replies` it is handed and reports back an ID. It
+// decides nothing: not how many buttons there are, not what they say, and not
+// what any of them means. The first one is styled as the lead because the reply
+// sets are ordered, and the order is the source surface's own.
 function CompanionBlock({
-  lines, example, yesLabel, noLabel, onYes, onNo, onQuiet, quietLabel,
+  lines, example, replies, escape, onReply, onQuiet, quietLabel,
 }: {
-  lines: string[];
+  lines: (string | null)[];
   example?: string;
-  yesLabel: string | null;
-  noLabel: string;
-  onYes: () => void;
-  onNo: () => void;
+  replies: readonly CompanionReply[];
+  /** The Something else way out, or null when nothing is being asked. */
+  escape?: CompanionReply | null;
+  onReply: (replyId: string) => void;
   onQuiet?: () => void;
   quietLabel?: string;
 }) {
+  const shown = replies.slice(0, COMPANION_REPLIES_MAX);
   return (
     <div className="asx-offer">
-      {lines.filter(Boolean).map((line, i) => (
+      {lines.filter((l): l is string => Boolean(l)).map((line, i) => (
         <p key={i} className="asx-turn-s">{line}</p>
       ))}
       {example && <p className="asx-eg">{example}</p>}
-      <div className="asx-acts">
-        {yesLabel && (
-          <button type="button" className="asx-btn asx-btn-primary" onClick={onYes}>{yesLabel}</button>
-        )}
-        <button type="button" className="asx-btn" onClick={onNo}>{noLabel}</button>
-        {onQuiet && quietLabel && (
-          <button type="button" className="asx-quiet" onClick={onQuiet}>{quietLabel}</button>
-        )}
-      </div>
+      {(shown.length > 0 || escape || onQuiet) && (
+        <div className="asx-acts">
+          {shown.map((reply, i) => (
+            <button
+              key={reply.id}
+              type="button"
+              className={i === 0 ? 'asx-btn asx-btn-primary' : 'asx-btn'}
+              onClick={() => onReply(reply.id)}
+            >
+              {reply.label}
+            </button>
+          ))}
+          {/* Last, and quieter than the answers, because it is not one of them.
+              It is the way out for somebody the three did not fit. */}
+          {escape && (
+            <button
+              type="button"
+              className="asx-btn asx-btn-else"
+              onClick={() => onReply(escape.id)}
+            >
+              {escape.label}
+            </button>
+          )}
+          {onQuiet && quietLabel && (
+            <button type="button" className="asx-quiet" onClick={onQuiet}>{quietLabel}</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2056,6 +2128,11 @@ button.asx-notice-row:focus-visible{outline:2px solid var(--asx-brand);outline-o
 .asx-btn-primary{padding:0 15px;background:var(--asx-sage-l);border-color:var(--asx-sage-l);
   color:var(--asx-ink);font-weight:600;}
 .asx-btn-primary:hover{background:#B0C6B7;}
+/* Something else. Quieter than the answers, because it is not one of them: it
+   is the way out for somebody the three did not fit. No border, so it reads as
+   a link beside three buttons rather than as a fourth choice competing. */
+.asx-btn-else{border-color:transparent;color:var(--asx-sage-l);padding:0 8px;}
+.asx-btn-else:hover{background:rgba(158,183,166,.10);color:var(--asx-white);}
 .asx-quiet{background:transparent;border:none;padding:0 4px;cursor:pointer;font:inherit;font-size:11.5px;
   color:var(--asx-sage-l);text-decoration:underline;text-underline-offset:2px;}
 .asx-quiet:hover{color:var(--asx-white);}

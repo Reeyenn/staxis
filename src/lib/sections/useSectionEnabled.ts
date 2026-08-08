@@ -1,23 +1,37 @@
 'use client';
 
-// Client-side section gate. Reads the active hotel's enabled_sections (which
-// rides along on PropertyContext.activeProperty — no extra fetch) and resolves
-// it through the shared default-ON contract. FAIL-OPEN while the property is
-// still loading (activeProperty null ⇒ every section ON) so the nav never
-// flash-hides a tab and then pops it back.
+// Client-side section gate. Reads the ACTIVE SCOPE from PropertyContext and
+// resolves it through the shared per-scope contract in
+// @/lib/portfolio-ui/acting-scope.
+//
+// THIS USED TO FAIL OPEN. While the property was null every section resolved ON
+// so the nav would not flash-hide a tab, while useCan failed CLOSED for exactly
+// the same state. Under an unresolved scope that pairing renders the whole
+// navigation with every button dead, which is worse than a tab arriving a beat
+// late. Both gates now refuse an unresolved scope, and sectionsForScope is
+// where that rule lives so a test can hold the two together.
 
 import { useProperty } from '@/contexts/PropertyContext';
-import { isSectionEnabled, resolveSections, type AppSection } from './registry';
+import { sectionsForScope } from '@/lib/portfolio-ui/acting-scope';
+import type { AppSection } from './registry';
 
-/** Is a single section on for the active hotel? True while loading. */
-export function useSectionEnabled(section: AppSection): boolean {
-  const { activeProperty } = useProperty();
-  return isSectionEnabled(activeProperty?.enabledSections, section);
+/** The full resolved 8-key map for the current scope. */
+export function useEnabledSections(): Record<AppSection, boolean> {
+  const { activeScope, activeProperty, properties } = useProperty();
+  const companyPropertyIds = activeScope.kind === 'company'
+    ? new Set(activeScope.scope.propertyIds)
+    : null;
+  return sectionsForScope(activeScope, {
+    hotel: activeProperty?.enabledSections,
+    company: companyPropertyIds
+      ? properties
+        .filter((property) => companyPropertyIds.has(property.id.toLowerCase()))
+        .map((property) => property.enabledSections)
+      : [],
+  });
 }
 
-/** The full resolved 8-key map for the active hotel (every missing key ⇒ ON).
- *  Handy for one-shot nav filtering in the Header. */
-export function useEnabledSections(): Record<AppSection, boolean> {
-  const { activeProperty } = useProperty();
-  return resolveSections(activeProperty?.enabledSections);
+/** Is a single section on at the current scope? */
+export function useSectionEnabled(section: AppSection): boolean {
+  return useEnabledSections()[section];
 }

@@ -24,3 +24,16 @@ export function companyBootstrapPath(organizationId: string | null): string {
     ? `${BOOTSTRAP_PATH}?organizationId=${encodeURIComponent(organizationId)}`
     : BOOTSTRAP_PATH;
 }
+
+/** Hotel-only accounts may skip the door; an exact company hat never does. */
+export function shouldAutoEnterSingleHotel(input: {
+  exactCompanyHat: boolean;
+  hotelCount: number;
+  hasSelectedCompany: boolean;
+  requiresCompanySelection: boolean;
+}): boolean {
+  return !input.exactCompanyHat
+    && !input.hasSelectedCompany
+    && !input.requiresCompanySelection
+    && input.hotelCount === 1;
+}

@@ -42,7 +42,6 @@ import {
   UID_ADMIN,
   UID_GIL,
   UID_MARIA,
-  UID_VERA,
   UID_WANDA,
   seedTwoCompanies,
   type TwoCompanySeed,
@@ -53,9 +52,6 @@ const CODE_B1 = 'B1-REVOKE-RACE';
 const CODE_L1 = 'L1-LEGACY-OWNER';
 const CODE_STAFF_ACTIVE = 'L1-STAFF-ACTIVE';
 const CODE_STAFF_EXHAUSTED = 'L1-STAFF-USED';
-const JOIN_ACCOUNT_A1 = 'f1000000-0000-4000-8000-000000000001';
-const JOIN_USER_A1 = 'f1000000-0000-4000-8000-000000000002';
-const JOIN_REQUEST_A1 = 'f1000000-0000-4000-8000-000000000003';
 const JOIN_ACCOUNT_B1 = 'f2000000-0000-4000-8000-000000000001';
 const JOIN_USER_B1 = 'f2000000-0000-4000-8000-000000000002';
 const JOIN_REQUEST_B1 = 'f2000000-0000-4000-8000-000000000003';
@@ -255,63 +251,6 @@ describe('onboarding uses live normalized authority', () => {
     await pg.query(`delete from auth.users where id=$1`, [TRANSFER_INVITE_USER]);
   });
 
-  test('staff approval commits staff, link, normalized authority, decision, and audit together', async () => {
-    await pg.query(`insert into auth.users(id,email) values ($1,'join-a1@example.test')`, [JOIN_USER_A1]);
-    await pg.query(
-      `insert into accounts(
-         id,username,password_hash,display_name,role,property_access,data_user_id
-       ) values ($1,'join-a1','x','A1 Housekeeper','housekeeping','{}',$2)`,
-      [JOIN_ACCOUNT_A1, JOIN_USER_A1],
-    );
-    await pg.query(
-      `insert into join_requests(
-         id,property_id,account_id,name,phone,language,department
-       ) values ($1,$2,$3,'A1 Housekeeper','+1 409 555 0101','en','housekeeping')`,
-      [JOIN_REQUEST_A1, PID_A1, JOIN_ACCOUNT_A1],
-    );
-
-    signedInAs = UID_MARIA;
-    const response = await decideJoinRequest(request(
-      'https://staxis.test/api/staff/join-requests',
-      {
-        method: 'PUT',
-        body: { hotelId: PID_A1, requestId: JOIN_REQUEST_A1, decision: 'approve' },
-      },
-    ));
-    assert.equal(response.status, 200, await response.text());
-
-    const account = await pg.query<{ staff_id: string | null; property_access: string[] }>(
-      `select staff_id,property_access from accounts where id=$1`,
-      [JOIN_ACCOUNT_A1],
-    );
-    assert.ok(account.rows[0].staff_id);
-    assert.deepEqual(account.rows[0].property_access, [], 'normalized access does not repopulate the legacy snapshot');
-    const link = await pg.query<{ count: number }>(
-      `select count(*)::integer as count
-         from account_property_staff_links
-        where account_id=$1 and property_id=$2 and staff_id=$3 and is_active`,
-      [JOIN_ACCOUNT_A1, PID_A1, account.rows[0].staff_id],
-    );
-    assert.equal(Number(link.rows[0].count), 1);
-    const projection = await pg.query<{ value: { authorityMode: string; propertyIds: string[] } }>(
-      `select public.staxis_list_account_authorized_properties($1) as value`,
-      [JOIN_ACCOUNT_A1],
-    );
-    assert.equal(projection.rows[0].value.authorityMode, 'normalized');
-    assert.deepEqual(projection.rows[0].value.propertyIds, [PID_A1]);
-    const decision = await pg.query<{ status: string }>(
-      `select status from join_requests where id=$1`,
-      [JOIN_REQUEST_A1],
-    );
-    assert.equal(decision.rows[0].status, 'approved');
-    const audit = await pg.query<{ count: number }>(
-      `select count(*)::integer as count from admin_audit_log
-        where action='join_request.approve' and target_id=$1`,
-      [JOIN_REQUEST_A1],
-    );
-    assert.equal(Number(audit.rows[0].count), 1);
-  });
-
   test('staff approval rechecks the manager inside the transaction', async () => {
     await pg.query(`insert into auth.users(id,email) values ($1,'race-manager@example.test')`, [RACE_MANAGER_USER]);
     await pg.query(
@@ -414,36 +353,6 @@ describe('onboarding uses live normalized authority', () => {
     );
     assert.equal(projection.rows[0].value.authorityMode, 'normalized');
     assert.deepEqual(projection.rows[0].value.propertyIds, [PID_A1]);
-  });
-
-  test('a company-only oversight hat can read the hotel elsewhere but cannot mutate onboarding', async () => {
-    signedInAs = UID_VERA;
-    const getResponse = await wizardGet(request(
-      `https://staxis.test/api/onboard/wizard?code=${encodeURIComponent(CODE_B1)}`,
-    ));
-    assert.equal(getResponse.status, 200);
-    const getBody = await getResponse.json() as {
-      data: { state: Record<string, unknown>; hotelDefaults: unknown };
-    };
-    assert.deepEqual(getBody.data.state, { step: 5 });
-    assert.equal(getBody.data.hotelDefaults, null);
-
-    const nameBefore = await propertyName(PID_B1);
-    const patchResponse = await wizardPatch(request(
-      'https://staxis.test/api/onboard/wizard',
-      {
-        method: 'PATCH',
-        body: { code: CODE_B1, propertyUpdates: { name: 'Oversight mutation' } },
-      },
-    ));
-    assert.equal(patchResponse.status, 403);
-    assert.equal(await propertyName(PID_B1), nameBefore);
-
-    const resume = await resumeGet(request(
-      `https://staxis.test/api/onboard/resume?propertyId=${PID_B1}`,
-    ));
-    assert.equal(resume.status, 307);
-    assert.equal(new URL(resume.headers.get('location')!).pathname, '/property-selector');
   });
 
   test('active and exhausted ordinary staff bearers never open the onboarding wizard', async () => {

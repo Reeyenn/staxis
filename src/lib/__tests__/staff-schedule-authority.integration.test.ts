@@ -19,7 +19,11 @@ import {
 } from '@/app/api/staff-schedule/templates/route';
 import { POST as setWeekDone } from '@/app/api/staff-schedule/week-done/route';
 import { PUT as replacePresets } from '@/app/api/staff-schedule/presets/route';
-import { PUT as decideTimeOff } from '@/app/api/staff-schedule/time-off/route';
+import {
+  POST as submitTimeOff,
+  PUT as decideTimeOff,
+  DELETE as cancelTimeOff,
+} from '@/app/api/staff-schedule/time-off/route';
 
 const MANAGER_USER = 'b1000000-0000-4000-8000-000000000001';
 const EMPLOYEE_USER = 'b1000000-0000-4000-8000-000000000002';
@@ -995,5 +999,206 @@ describe('staff schedule authority and history migration 0412', () => {
       [ARCHIVED_STAFF, PROPERTY],
     );
     assert.deepEqual(reactivation, []);
+  });
+
+  // ── Staff self-cancel of a pending time-off request ────────────────────
+  // The employee-facing half of the request loop: submitting a wrong date
+  // used to be permanent, and the duplicate guard then blocked ever asking
+  // for that date again.
+
+  /** N days from now in the property's timezone (fixtures must not go stale). */
+  const daysFromNowUtc = (days: number) =>
+    new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+  const jsonRequest = (
+    path: string,
+    method: 'POST' | 'PUT' | 'DELETE',
+    body?: Record<string, unknown>,
+  ) => new NextRequest(`https://staxis.test${path}`, {
+    method,
+    headers: {
+      authorization: 'Bearer schedule-self-service-test',
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+
+  const statusOf = async (id: string) => {
+    const rows = await pg.query<{ status: string; decided_by: string | null }>(
+      `select status, decided_by::text from public.time_off_requests where id = $1::uuid`,
+      [id],
+    );
+    return rows.rows[0] ?? null;
+  };
+
+  test('an employee can take back only their own still-pending time-off request', async () => {
+    routeUserId = EMPLOYEE_USER;
+    const requestDate = daysFromNowUtc(30);
+
+    const submitted = await submitTimeOff(jsonRequest('/api/staff-schedule/time-off', 'POST', {
+      hotelId: PROPERTY,
+      requestDate,
+      reason: 'Wrong date on purpose',
+    }));
+    assert.equal(submitted.status, 200);
+    const submittedBody = await submitted.json() as { data: { request: { id: string } } };
+    const ownRequestId = submittedBody.data.request.id;
+    assert.deepEqual(await statusOf(ownRequestId), { status: 'pending', decided_by: null });
+
+    // Someone else's request is untouchable even with a valid row id.
+    const foreign = await cancelTimeOff(jsonRequest(
+      `/api/staff-schedule/time-off?hotelId=${PROPERTY}&id=${COWORKER_TIME_OFF}`,
+      'DELETE',
+    ));
+    assert.equal(foreign.status, 403);
+    assert.deepEqual(await statusOf(COWORKER_TIME_OFF), { status: 'pending', decided_by: null });
+
+    // Own pending request cancels, and nobody is recorded as having decided it.
+    const cancelled = await cancelTimeOff(jsonRequest(
+      `/api/staff-schedule/time-off?hotelId=${PROPERTY}&id=${ownRequestId}`,
+      'DELETE',
+    ));
+    assert.equal(cancelled.status, 200);
+    assert.deepEqual(await statusOf(ownRequestId), { status: 'cancelled', decided_by: null });
+
+    // Cancelling twice is a conflict, not a silent success.
+    const again = await cancelTimeOff(jsonRequest(
+      `/api/staff-schedule/time-off?hotelId=${PROPERTY}&id=${ownRequestId}`,
+      'DELETE',
+    ));
+    assert.equal(again.status, 409);
+
+    // The whole point: the date is free again. Both the route's duplicate
+    // guard and the partial unique index only count pending/approved rows.
+    const resubmitted = await submitTimeOff(jsonRequest('/api/staff-schedule/time-off', 'POST', {
+      hotelId: PROPERTY,
+      requestDate,
+      reason: 'Right date this time',
+    }));
+    assert.equal(resubmitted.status, 200);
+    const resubmittedBody = await resubmitted.json() as { data: { request: { id: string } } };
+    assert.notEqual(resubmittedBody.data.request.id, ownRequestId);
+
+    // And a second live request for that date is still refused.
+    const duplicate = await submitTimeOff(jsonRequest('/api/staff-schedule/time-off', 'POST', {
+      hotelId: PROPERTY,
+      requestDate,
+      reason: 'Third attempt',
+    }));
+    assert.equal(duplicate.status, 409);
+
+    await pg.query(
+      `delete from public.time_off_requests where staff_id = $1::uuid and request_date = $2::date`,
+      [EMPLOYEE_STAFF, requestDate],
+    );
+  });
+
+  test('a decided request can no longer be taken back by the employee', async () => {
+    const requestDate = daysFromNowUtc(45);
+    routeUserId = EMPLOYEE_USER;
+    const submitted = await submitTimeOff(jsonRequest('/api/staff-schedule/time-off', 'POST', {
+      hotelId: PROPERTY,
+      requestDate,
+    }));
+    assert.equal(submitted.status, 200);
+    const requestId = (await submitted.json() as { data: { request: { id: string } } }).data.request.id;
+
+    routeUserId = MANAGER_USER;
+    const decided = await decideTimeOff(jsonRequest('/api/staff-schedule/time-off', 'PUT', {
+      hotelId: PROPERTY,
+      id: requestId,
+      decision: 'approve',
+    }));
+    assert.equal(decided.status, 200);
+
+    routeUserId = EMPLOYEE_USER;
+    const tooLate = await cancelTimeOff(jsonRequest(
+      `/api/staff-schedule/time-off?hotelId=${PROPERTY}&id=${requestId}`,
+      'DELETE',
+    ));
+    assert.equal(tooLate.status, 409);
+    assert.equal((await statusOf(requestId))?.status, 'approved');
+
+    await pg.query(
+      `delete from public.time_off_requests where id = $1::uuid`,
+      [requestId],
+    );
+  });
+
+  // ── Manager-created open shifts ────────────────────────────────────────
+  // Nothing in the UI could create one before; the archive RPC was the only
+  // runtime producer. An open shift staff cannot see is not coverage.
+
+  test('a manager-posted open shift lands published, unstaffed, and visible to its department', async () => {
+    const shiftDate = daysFromNowUtc(21);
+    routeUserId = MANAGER_USER;
+
+    const created = await writeShift(jsonRequest('/api/staff-schedule/shifts', 'POST', {
+      hotelId: PROPERTY,
+      shift: {
+        department: 'housekeeping',
+        shiftDate,
+        startTime: '10:00',
+        endTime: '18:00',
+        kind: 'open',
+        staffId: null,
+        note: 'Extra coverage for the tour group',
+      },
+    }));
+    assert.equal(created.status, 200);
+    const createdBody = await created.json() as {
+      data: { shift: { id: string; staffId: string | null; kind: string; status: string } };
+    };
+    const openId = createdBody.data.shift.id;
+    assert.equal(createdBody.data.shift.staffId, null);
+    assert.equal(createdBody.data.shift.kind, 'open');
+    assert.equal(createdBody.data.shift.status, 'published');
+
+    // Published matters: the browser RLS row filter hides anything else from
+    // staff, so a draft open shift would be a hole nobody could fill.
+    const employeeView = await asUser(
+      EMPLOYEE_USER,
+      `select id::text as id from public.scheduled_shifts
+       where property_id = $1::uuid and shift_date = $2::date`,
+      [PROPERTY, shiftDate],
+    );
+    assert.deepEqual(employeeView.map(row => row.id), [openId]);
+
+    // Editing an open slot keeps it open and unstaffed.
+    routeUserId = MANAGER_USER;
+    const edited = await writeShift(jsonRequest('/api/staff-schedule/shifts', 'POST', {
+      hotelId: PROPERTY,
+      shift: {
+        id: openId,
+        department: 'housekeeping',
+        shiftDate,
+        startTime: '11:00',
+        endTime: '19:00',
+        kind: 'open',
+        staffId: null,
+        note: null,
+      },
+    }));
+    assert.equal(edited.status, 200);
+    const editedRow = await pg.query<{ staff_id: string | null; kind: string; status: string; start_time: string }>(
+      `select staff_id::text, kind, status, start_time::text
+       from public.scheduled_shifts where id = $1::uuid`,
+      [openId],
+    );
+    assert.deepEqual(editedRow.rows, [{
+      staff_id: null, kind: 'open', status: 'published', start_time: '11:00:00',
+    }]);
+
+    // Retract removes the slot outright.
+    const retracted = await deleteShift(jsonRequest(
+      `/api/staff-schedule/shifts?hotelId=${PROPERTY}&id=${openId}`,
+      'DELETE',
+    ));
+    assert.equal(retracted.status, 200);
+    const gone = await pg.query(
+      `select 1 from public.scheduled_shifts where id = $1::uuid`,
+      [openId],
+    );
+    assert.equal(gone.rows.length, 0);
   });
 });

@@ -35,7 +35,7 @@ import dynamic from 'next/dynamic';
 import { useAuth } from '@/contexts/AuthContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS, SessionEndedError } from '@/lib/api-fetch';
-import { reportCompanionFlow } from '@/components/companion/companion-events';
+import { reportCompanionDeed, reportCompanionFlow } from '@/components/companion/companion-events';
 import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
@@ -643,6 +643,12 @@ export function StaxisList({
         // The companion decides whether to say anything; it will say it at most
         // once, ever. See decideTeachMoment.
         reportCompanionFlow('create_task');
+        // The same moment, said to the tour instead of to the tip. A `try`
+        // stop standing on this screen waits for exactly this and nothing
+        // else, so it is fired AFTER the envelope came back clean: a to-do
+        // that failed to save must never advance a tour that then tells
+        // somebody it is on the list.
+        reportCompanionDeed('todo_created');
         await reloadWorklist();
         // A to-do handed to somebody else never appears on the list we just
         // reloaded: the assignment rule takes it off the assigner's own screen

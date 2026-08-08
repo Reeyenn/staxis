@@ -16,7 +16,7 @@ import { T, fonts, deptMeta, asDeptKey, Caps, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
 
 export function WeekRoster({
-  days, getDay, staff, lang, onPickDay, animNonce, reducedMotion,
+  days, getDay, staff, lang, onPickDay, animNonce, reducedMotion, openCountByDate,
 }: {
   days: DayInfo[];
   getDay: (date: string) => BoardShift[];
@@ -25,6 +25,12 @@ export function WeekRoster({
   onPickDay?: (date: string) => void;
   animNonce?: number;
   reducedMotion?: boolean;
+  /**
+   * Unfilled slots per date. The roster is a staff × day grid and an open
+   * shift belongs to nobody, so it shows as a marker on the day column
+   * instead of a row. Optional: the Fill modal's preview has no open lane.
+   */
+  openCountByDate?: Record<string, number>;
 }) {
   const cols = `170px repeat(${days.length}, 1fr)`;
   const rootRef = useRef<HTMLDivElement>(null);
@@ -77,25 +83,39 @@ export function WeekRoster({
           padding: '10px 14px', fontFamily: fonts.mono, fontSize: 9,
           color: T.ink3, letterSpacing: '0.08em', fontWeight: 600,
         }}>{'STAFF'}</div>
-        {days.map(d => (
-          <button
-            key={d.date}
-            onClick={() => onPickDay?.(d.date)}
-            title={onPickDay ? (`Open ${d.dowFull} in Day view`) : undefined}
-            style={{
-              padding: '8px 4px', textAlign: 'center',
-              cursor: onPickDay ? 'pointer' : 'default',
-              border: 'none', borderLeft: `1px solid ${T.ruleSoft}`,
-              background: d.today ? 'rgba(201,150,68,0.10)' : 'transparent',
-            }}
-          >
-            <div style={{
-              fontFamily: fonts.mono, fontSize: 8.5,
-              color: d.today ? T.caramelDeep : T.ink3, fontWeight: 600, letterSpacing: '0.05em',
-            }}>{d.dow.toUpperCase()}{d.today ? (' · NOW') : ''}</div>
-            <div style={{ fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{d.dayNum}</div>
-          </button>
-        ))}
+        {days.map(d => {
+          const openCount = openCountByDate?.[d.date] ?? 0;
+          return (
+            <button
+              key={d.date}
+              onClick={() => onPickDay?.(d.date)}
+              title={onPickDay ? (`Open ${d.dowFull} in Day view`) : undefined}
+              style={{
+                padding: '8px 4px', textAlign: 'center',
+                cursor: onPickDay ? 'pointer' : 'default',
+                border: 'none', borderLeft: `1px solid ${T.ruleSoft}`,
+                background: d.today ? 'rgba(201,150,68,0.10)' : 'transparent',
+              }}
+            >
+              <div style={{
+                fontFamily: fonts.mono, fontSize: 8.5,
+                color: d.today ? T.caramelDeep : T.ink3, fontWeight: 600, letterSpacing: '0.05em',
+              }}>{d.dow.toUpperCase()}{d.today ? (' · NOW') : ''}</div>
+              <div style={{ fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{d.dayNum}</div>
+              {openCount > 0 && (
+                <div
+                  title={`${openCount} open ${openCount === 1 ? 'shift' : 'shifts'} nobody has picked up`}
+                  style={{
+                    display: 'inline-block', marginTop: 2,
+                    fontFamily: fonts.mono, fontSize: 8, fontWeight: 700, letterSpacing: '0.05em',
+                    color: T.caramelDeep, border: `1px dashed ${T.caramelDeep}`,
+                    borderRadius: 999, padding: '0 5px',
+                  }}
+                >{openCount} {'OPEN'}</div>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {lanes.map(dep => {

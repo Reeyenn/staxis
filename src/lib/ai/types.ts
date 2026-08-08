@@ -23,12 +23,12 @@ export const AI_FEATURE_KEYS = [
   'agent.portfolio_chat',
   'companion.conversation',
   'companion.event_wake',
+  'companion.reply_question',
   'agent.conversation_summary',
   'agent.memory_consolidation',
   'findings.judge',
   'findings.sweep',
   'findings.brief',
-  'walkthrough.step_generation',
   'feed.todo_reading',
   'inventory.photo_count',
   'inventory.invoice_scan',
@@ -93,6 +93,46 @@ export type AiLedgerOnlyFeature = (typeof AI_LEDGER_ONLY_FEATURES)[number];
 
 /** Every value `agent_costs.feature` may hold. */
 export type AiCostFeature = AiFeatureKey | AiLedgerOnlyFeature;
+
+// ─── What KIND of work spent it ─────────────────────────────────────────────
+//
+// `agent_costs.kind` is the other axis, and it is a closed set in the database
+// too: 0080 created it with a CHECK over three values, 0117 added 'audio' when
+// voice notes started costing money, and 0145 added 'vision' when photo and
+// document scanning did.
+//
+// IT IS WRITTEN DOWN HERE BECAUSE IT WAS NOT WRITTEN DOWN ANYWHERE.
+// Both of those migrations taught the WRITERS about the new kind and neither
+// taught the READERS. `/api/agent/metrics` still bucketed the original three, so
+// the "AI spend today" light on Mission Control — the founder's one glance at
+// what the product costs him — quietly excluded every invoice scan, every shelf
+// photo, every scanned page and every voice note. Those are the most expensive
+// calls in the product: a day that really cost twelve dollars showed as thirty
+// cents, green, with nothing on the screen suggesting a number was missing.
+//
+// A reader that folds over THIS list cannot skip a kind, because a new kind that
+// is not handled fails to compile rather than disappearing off a screen.
+export const AI_COST_KINDS = [
+  /** A user-facing chat turn, through the reserve → finalize protocol. The only
+   *  kind the per-user/per-hotel/global dollar caps count (INV-17). */
+  'request',
+  /** Work nobody is waiting for: summaries, memory, the nightly findings pass. */
+  'background',
+  /** Photo, PDF and scanned-page reading. */
+  'vision',
+  /** Speech to text. */
+  'audio',
+  /** The eval harness driving the agent against fixtures. */
+  'eval',
+] as const;
+
+/** Every value `agent_costs.kind` may hold. */
+export type AiCostKind = (typeof AI_COST_KINDS)[number];
+
+/** The kinds a non-chat caller may book. `request` is excluded on purpose: those
+ *  rows are created only by the reservation protocol, and a background caller
+ *  inventing one would eat the cap a manager needs to ask a question. */
+export type AiNonRequestCostKind = Exclude<AiCostKind, 'request'>;
 
 export type AiFeatureGroup =
   | 'Admin'

@@ -54,7 +54,6 @@ import 'server-only';
 import { log } from '@/lib/log';
 import { captureException } from '@/lib/sentry';
 import {
-  MAX_OUTPUT_TOKENS,
   escapeTrustMarkerContent,
   runAgent,
   type MessagesClient,
@@ -87,6 +86,25 @@ import type { WakeEventRow } from './events';
 export const MAX_WAKE_INPUT_TOKENS = 4_000;
 
 /**
+ * Output ceiling for this call, asked of the provider.
+ *
+ * The reply is one JSON object: a three-word verb, a sentence capped at
+ * MAX_NOTICE_CHARS, and a `why` clipped to 200. Around eighty tokens in
+ * practice and never more than a couple of hundred. This is generous headroom
+ * over that and still an order of magnitude under the runtime's default.
+ *
+ * IT IS THE SAME NUMBER THE HOLD IS PRICED FROM, and it has to be. A hold must
+ * be bigger than anything that can actually be billed, so a smaller hold is
+ * only honest if the request itself asks for less. Change one of these two
+ * lines and change the other in the same edit.
+ *
+ * A reply that hits the ceiling arrives with `stop_reason: 'max_tokens'`, which
+ * `validateAssistantResponse` below already refuses outright, so the failure
+ * mode of setting this too low is silence rather than a truncated sentence.
+ */
+export const MAX_WAKE_OUTPUT_TOKENS = 512;
+
+/**
  * The hold placed before the call.
  *
  * Priced at HAIKU, and that is only honest because the feature's model is
@@ -96,14 +114,25 @@ export const MAX_WAKE_INPUT_TOKENS = 4_000;
  * on. If the lock is ever lifted, this line has to change in the same commit or
  * the ceiling stops being a ceiling.
  *
- * `MAX_OUTPUT_TOKENS` and not the ~80 tokens a real reply costs: the runtime
- * asks the provider for that ceiling, and a hold must be bigger than anything
- * that can actually be billed, not bigger than what we expect.
+ * ─── AND WHY IT IS NO LONGER PRICED AT MAX_OUTPUT_TOKENS ───────────────────
+ *
+ * It was, because the runtime asked the provider for that ceiling on every
+ * call, and a hold has to cover what can be billed rather than what we expect.
+ * The consequence was a hold of $0.09 against a feature ceiling of $0.25:
+ * thirty-six percent of the whole budget for one eighty-token reply, so only
+ * two unreconciled holds fitted. `settleSpend` cancels or finalizes on every
+ * path including the throw path, so that only bit on process death mid-call,
+ * and then FEATURE_ABANDON_MINUTES gave up to fifteen minutes of spend_cap
+ * refusals for money nobody spent.
+ *
+ * The fix is not a smaller hold over the same request. It is a smaller request:
+ * `maxOutputTokens` is now passed to `runAgent`, so the provider cannot bill
+ * beyond what is held.
  */
 export const WAKE_RESERVATION_USD = deriveBackgroundReservationUsd({
   tier: 'haiku',
   maxInputTokens: MAX_WAKE_INPUT_TOKENS,
-  maxOutputTokens: MAX_OUTPUT_TOKENS,
+  maxOutputTokens: MAX_WAKE_OUTPUT_TOKENS,
 });
 
 /** Longest sentence the companion will carry out of this. Two lines on a phone. */
@@ -430,6 +459,9 @@ export async function askWhatToPrepare(opts: WakeCallOptions): Promise<WakeCallO
       },
       model: 'haiku',
       featureKey: 'companion.event_wake',
+      // The ceiling WAKE_RESERVATION_USD is priced from. Passing it is what
+      // makes the smaller hold honest rather than optimistic.
+      maxOutputTokens: MAX_WAKE_OUTPUT_TOKENS,
       modelClient: opts.modelClient,
       abortSignal: opts.abortSignal,
       deadlineAt: now.getTime() + WAKE_DEADLINE_MS,

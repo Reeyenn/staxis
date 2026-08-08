@@ -17,7 +17,7 @@ import {
   asRecordRows,
   type PollingSubscription,
 } from './_common';
-import { toStaffRow, fromStaffRow } from '../db-mappers';
+import { fromStaffRow } from '../db-mappers';
 
 /** Default upper bound on staff rows returned by listing helpers. */
 export const DEFAULT_STAFF_LIMIT = 500;
@@ -93,16 +93,28 @@ async function readStaffRosterWithRetry(
   }
 }
 
-// Defense for the WRITE side of the same leak. The mapper faithfully maps
-// phone/hourlyWage to database columns, but the anon client must never carry
-// either write — RLS is row-level only, so any authenticated property user
-// could otherwise overwrite a colleague's contact/payroll data. Both fields
-// are persisted through management-gated service-role routes instead.
-function stripPrivateWrites(row: Record<string, unknown>): Record<string, unknown> {
-  delete row.phone;
-  delete row.hourly_wage;
-  return row;
-}
+// ⚠️ THERE IS DELIBERATELY NO BROWSER WRITER HERE. Don't add one back.
+//
+// `addStaffMember` / `updateStaffMember` lived here until 2026-08-07 and wrote
+// `staff` through the ANON client, so the only thing deciding whether an edit
+// was allowed was the RLS predicate `staxis_user_can_manage_staff` (migration
+// 0334). That predicate answers from the LEGACY globals — `accounts.role` and
+// the `accounts.property_access` array — which every server path in this
+// codebase treats as non-authoritative rollback material. The two authority
+// models disagreed and the browser ran on the weaker one: a manager demoted by
+// a company hat, or one whose hotel moved companies, kept the power to edit
+// that hotel's roster. `staff.department` decides which comms channels and
+// knowledge documents a person can reach, so that edit changed what colleagues
+// could read.
+//
+// They also had to hand-scrub `phone` and `hourly_wage` out of every write,
+// because RLS is row-level only and cannot stop a single column.
+//
+// Roster writes now go to POST / PUT / DELETE /api/staff/operational, which
+// decide with `accountCapabilityDecisionForProperty` (fresh account, exact
+// per-hotel standing, fail closed) and `.select()` the row back so a zero-row
+// write is a real failure rather than a silent no-op. Pay and phone keep their
+// own gated routes, /api/staff/wages and /api/staff/contacts.
 
 export interface StaffListOpts {
   /** 1-based page size cap. Clamped to [1, MAX_STAFF_LIMIT]. */
@@ -154,23 +166,3 @@ export function subscribeToStaff(
   );
 }
 
-export async function addStaffMember(_uid: string, pid: string, data: Omit<StaffMember, 'id'>): Promise<string> {
-  try {
-    const row = { ...stripPrivateWrites(toStaffRow(data)), property_id: pid };
-    const { data: inserted, error } = await supabase
-      .from('staff').insert(row).select('id').single();
-    if (error) throw error;
-    return String(inserted.id);
-  } catch (err) { logErr('addStaffMember', err); throw err; }
-}
-
-export async function updateStaffMember(_uid: string, pid: string, sid: string, data: Partial<StaffMember>): Promise<void> {
-  try {
-    const { error } = await supabase
-      .from('staff')
-      .update(stripPrivateWrites(toStaffRow(data)))
-      .eq('property_id', pid)
-      .eq('id', sid);
-    if (error) throw error;
-  } catch (err) { logErr('updateStaffMember', err); throw err; }
-}

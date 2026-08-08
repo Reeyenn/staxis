@@ -19,6 +19,7 @@
 import { defineRoute, adminGate } from '@/lib/api-route';
 import { ApiErrorCode } from '@/lib/api-response';
 import { readTwoFactorEnabledFresh, setTwoFactorEnabled } from '@/lib/two-factor';
+import { logSecurityEvent } from '@/lib/audit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,12 +48,36 @@ export const POST = defineRoute({
     });
   }
 
+  // Read the state we are leaving so the record says what changed, not just
+  // what it became.
+  const previous = await readTwoFactorEnabledFresh();
+
   const result = await setTwoFactorEnabled(body.twoFactorEnabled, ctx.userId);
   if (!result.ok) {
+    // A failed attempt to take the wall down is itself worth seeing.
+    await logSecurityEvent({
+      action: 'auth.two_factor_switch_failed',
+      userId: ctx.userId,
+      requestId: ctx.requestId,
+      metadata: { requested: body.twoFactorEnabled, previous, error: result.error },
+    });
     return ctx.err(`could not save setting: ${result.error}`, {
       status: 500, code: ApiErrorCode.UpstreamFailure,
     });
   }
+
+  // Turning this off disables every human second factor across the whole
+  // fleet. The only prior trace was app_settings.updated_by / updated_at — one
+  // mutable row that the next flip overwrites, so the history of when the wall
+  // was down did not exist anywhere. app_events is append-only.
+  await logSecurityEvent({
+    action: body.twoFactorEnabled
+      ? 'auth.two_factor_switch_enabled'
+      : 'auth.two_factor_switch_disabled',
+    userId: ctx.userId,
+    requestId: ctx.requestId,
+    metadata: { previous, next: body.twoFactorEnabled, accountId: ctx.accountId },
+  });
 
   return ctx.ok({ twoFactorEnabled: body.twoFactorEnabled });
   },

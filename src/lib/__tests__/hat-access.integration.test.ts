@@ -67,7 +67,7 @@ import { GET as rulebookGet, POST as rulebookPost } from '@/app/api/company/rule
 import { GET as companyAccessGet } from '@/app/api/company-access/route';
 import { POST as accountsPost, PUT as accountsPut } from '@/app/api/auth/accounts/route';
 
-import { applyMigrationsToPgliteThrough } from '../../../tests/fixtures/pglite-migrate';
+import { applyMigrationsToPglite, seedCanonicalTestAuthority } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
@@ -110,11 +110,12 @@ const originalCreateUser: CreateUserFn = supabaseAdmin.auth.admin.createUser.bin
 let signedInAs: string | null = null;
 
 /**
- * A LEGACY front-desk account at Beaumont — a hotel a real management company
- * operates. No hat, no membership: her access is the `accounts.property_access`
- * array and nothing else, which is what every account in the product looked
- * like before the spine. She is the person the Company Hub told that her hotel
- * was "not grouped under a management company".
+ * An UNMIGRATED front-desk account at Beaumont — a hotel a real management
+ * company operates. No hat, no membership, and (since the final access
+ * contract fenced `accounts.property_access`) no canonical authorization scope
+ * either. She is the person the Company Hub told that her hotel was "not
+ * grouped under a management company", and the account the final route must
+ * refuse rather than serve from a column nobody may write.
  */
 const ACCOUNT_DOLORES = 'aaaa1111-0000-4000-8000-0000000000d1';
 const UID_DOLORES = 'aaaa2222-0000-4000-8000-0000000000d1';
@@ -427,7 +428,7 @@ async function plantCompanyFinding(organizationId: string): Promise<string> {
 let PORTFOLIO_FINDING = '';
 
 before(async () => {
-  const migrated = await applyMigrationsToPgliteThrough('0425');
+  const migrated = await applyMigrationsToPglite();
   pg = migrated.pg;
   const catalog = await loadCatalog(pg);
   shim = createPglitePostgrest(pg, catalog);
@@ -450,11 +451,16 @@ before(async () => {
     [UID_DOLORES],
   );
   await pg.query(
-    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
-     values ($1, 'dolores', 'x', 'Dolores', 'front_desk', $2, $3)
+    `insert into accounts (id, username, password_hash, display_name, role, data_user_id)
+     values ($1, 'dolores', 'x', 'Dolores', 'front_desk', $2)
      on conflict (id) do nothing`,
-    [ACCOUNT_DOLORES, [PID_A1], UID_DOLORES],
+    [ACCOUNT_DOLORES, UID_DOLORES],
   );
+  // Deliberately NO canonical authorization scope and no hat. Under the final
+  // access contract (0426) `accounts.property_access` can no longer be written,
+  // so "an account carrying only the legacy array" now means "an account with
+  // no canonical authority at all" — which is exactly the unmigrated shape the
+  // Company Hub route has to refuse rather than serve from a stale column.
 
   PORTFOLIO_FINDING = await plantCompanyFinding(ORG_A);
 
@@ -511,18 +517,51 @@ describe('the coverage rule has exactly one implementation', () => {
   // company bought after the hat was written would vanish.
   test('a company hat reaches every hotel the company operates right now', () => {
     assert.deepEqual(
-      resolveHatCoverage('company', [], ['h2', 'h1']).sort(),
+      // NULL, not [] — the column being absent is what "every hotel" means.
+      resolveHatCoverage('company', null, ['h2', 'h1']).sort(),
       ['h1', 'h2'],
       'a company hat did not reach the company',
     );
   });
 
-  // Mutation: map finance to property_manager, or line staff to department_lead.
-  // Either hands somebody the company's people list to look at their own hotel.
+  // Mutation: return every operated hotel for ANY company hat — which is what
+  // this function actually did until 0467. The database walls held, so nobody
+  // gained access; the Company Hub simply told an owner they had handed out
+  // twenty hotels when they had handed out two. The screen somebody checks
+  // their own blast radius on is not a place to be approximately right.
+  test('a company hat that NAMES its hotels reaches those and no others', () => {
+    assert.deepEqual(
+      resolveHatCoverage('company', ['h1'], ['h1', 'h2', 'h3']),
+      ['h1'],
+      'a named company hat was presented as covering the whole company',
+    );
+  });
+
+  // …and it is intersected on the same terms as a property hat, so a hotel the
+  // company sold leaves both at once rather than lingering on the company one.
+  test('a named company hat drops a hotel the company no longer operates', () => {
+    assert.deepEqual(
+      resolveHatCoverage('company', ['h1', 'h2'], ['h1']),
+      ['h1'],
+      'a sold hotel survived on a named company hat',
+    );
+    // Empty-after-intersection is the fail-closed answer, never "all of them".
+    assert.deepEqual(resolveHatCoverage('company', ['h9'], ['h1', 'h2']), []);
+    // And a literal empty list names nothing, so it reaches nothing. Reading it
+    // as "all" is the silent open-fail this whole change exists to remove.
+    assert.deepEqual(resolveHatCoverage('company', [], ['h1', 'h2']), []);
+  });
+
+  // Mutation: map the regional manager to organization_admin, or line staff to
+  // department_lead. Either hands somebody the company's people list to look at
+  // their own hotel.
+  //
+  // The old third case — a `finance` hat degrading to `contributor` — is gone
+  // with the role: 0464 collapsed company scope to owner + regional_manager, so
+  // these two ARE the whole company vocabulary.
   test('the hat -> access-profile degradation is least privilege', () => {
     assert.equal(accessProfileForHat('company', 'owner'), 'organization_owner');
-    assert.equal(accessProfileForHat('company', 'vp'), 'portfolio_manager');
-    assert.equal(accessProfileForHat('company', 'finance'), 'contributor');
+    assert.equal(accessProfileForHat('company', 'regional_manager'), 'portfolio_manager');
     assert.equal(accessProfileForHat('property', 'general_manager'), 'property_manager');
     assert.equal(accessProfileForHat('property', 'front_desk'), 'viewer');
     assert.equal(accessProfileForHat('property', 'housekeeping'), 'viewer');
@@ -666,12 +705,20 @@ describe('the rulebook and the cross-hotel-chat switch', () => {
 
   // Mutation: gate on loadManagerCaller. Fiona's legacy role is `front_desk`,
   // so she was 404'd out of the book her own company governs her by.
-  test("a finance hat may READ the book and may not write it", async () => {
+  //
+  // She used to wear the retired `finance` hat and this test asserted she could
+  // read but not write. 0464 converted those people into regional managers, and
+  // the shipped `owner_and_vp` default admits a regional manager, so the honest
+  // assertion is that her degraded LEGACY role still does not decide anything:
+  // a front-desk `accounts.role` reaches, reads AND writes her company's book
+  // because the hat is what is being asked.
+  test('a company hat on a front-desk login reads AND writes the book', async () => {
     const fiona = await rulebookFor(UID_FIONA, ORG_A);
-    assert.equal(fiona.status, 200, 'the finance lead was refused the company book');
-    assert.equal(fiona.data?.companyRole, 'finance');
-    assert.equal(fiona.data?.canEdit, false, 'finance was handed the pen');
-    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'true'), 403, 'finance flipped a company switch');
+    assert.equal(fiona.status, 200, 'the company person was refused the company book');
+    assert.equal(fiona.data?.companyRole, 'regional_manager');
+    assert.equal(fiona.data?.canEdit, true, 'the legacy front-desk word took the pen away');
+    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'true'), 200, 'her company switch was refused');
+    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'false'), 200, 'and back off');
   });
 
   // The wall did not move when the gate did.
@@ -698,7 +745,7 @@ describe('the finance lead — the picker and the queue now agree', () => {
 
     const queue = await portfolioFor(UID_FIONA);
     assert.equal(queue.status, 200, 'the door she was shown was locked');
-    assert.equal(queue.data.scope?.companyRole, 'finance');
+    assert.equal(queue.data.scope?.companyRole, 'regional_manager');
     assert.ok((queue.data.scope?.hotelCount ?? 0) > 0, 'her portfolio was empty');
   });
 
@@ -904,19 +951,25 @@ describe('the Company Hub reads the spine', () => {
     }
   });
 
-  // This suite deliberately stops at the explicit pre-0426 boundary. The
-  // final Company Hub route must not project a legacy/shadow account from that
-  // boundary, even though the old deployment would have rendered it.
-  test('a pre-0426 legacy account is rejected by the final Company Hub route', async () => {
+  // These two used to assert a 500 because the suite ran against the explicit
+  // pre-0426 schema, where an unmigrated account had to fail closed rather than
+  // be rendered from its legacy array. The suite now runs the shipped schema,
+  // where `accounts.property_access` cannot be written at all — so the property
+  // worth pinning is the one the 500 was protecting: NO COMPANY is disclosed to
+  // somebody who holds no company job, whatever else is true about their hotel.
+  //
+  // Mutation: resurrect the legacy array as a company projection, or let a
+  // non-governing relationship name a company. Either one puts a company on
+  // these payloads and turns both of these red.
+  test('an account with no company job is disclosed no company at all', async () => {
     const hub = await hubFor(UID_DOLORES);
-    assert.equal(hub.status, 500);
-    assert.equal(hub.data, null);
+    assert.deepEqual(hub.data?.organizations ?? [], []);
+    assert.equal(hub.data?.permissions.viewPeople ?? false, false);
+    assert.deepEqual(hub.data?.memberships ?? [], []);
+    assert.deepEqual(hub.data?.effectiveAccess ?? [], []);
   });
 
-  // The final canonical bridge behavior for independent accounts is exercised
-  // below by accounts created through the current route. This pre-0426 legacy
-  // control must remain fail-closed here rather than resurrecting its array.
-  test('a pre-0426 independent legacy owner is rejected by the final route', async () => {
+  test('a NON-governing relationship never turns an independent owner into a company person', async () => {
     await pg.query(
       `insert into public.organization_property_relationships
          (organization_id, property_id, relationship_type, is_primary_grouping)
@@ -925,8 +978,17 @@ describe('the Company Hub reads the spine', () => {
     );
     try {
       const hub = await hubFor(UID_WANDA);
-      assert.equal(hub.status, 500);
-      assert.equal(hub.data, null);
+      // The only "organization" she is shown is the canonical independent
+      // bridge standing in for her own hotel. Piney Woods is not one of them.
+      assert.deepEqual(
+        (hub.data?.organizations ?? []).map((organization) => organization.id),
+        [`bridge-independent-${PID_L1}`],
+      );
+      assert.deepEqual(hub.data?.memberships ?? [], []);
+      assert.equal(
+        JSON.stringify(hub.data ?? {}).includes(ORG_B), false,
+        "the other company's id reached an independent owner's hub",
+      );
     } finally {
       await pg.query(
         `delete from public.organization_property_relationships
@@ -1312,7 +1374,7 @@ describe('RLS itself knows what a hat is (migration 0371)', () => {
   // two equivalent for revoked rows. It is belt over braces: if that CHECK is
   // ever loosened, the predicate must not widen as a side effect.)
   test('a hat somebody no longer holds grants nothing', async () => {
-    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:vp`);
+    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:regional_manager`);
     assert.ok(membershipId, "the fixture did not record Vera's hat");
 
     await pg.query(
@@ -1371,7 +1433,7 @@ describe('RLS itself knows what a hat is (migration 0371)', () => {
   // A job that starts on the first of next month is not a job today.
   // Mutation: drop `and m.starts_at <= now()`.
   test('a hat that has not started yet grants nothing', async () => {
-    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:vp`);
+    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:regional_manager`);
     await pg.query(
       `update public.organization_memberships
           set starts_at = now() + interval '30 days' where id = $1`,

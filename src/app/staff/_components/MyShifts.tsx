@@ -1,10 +1,13 @@
 // MyShifts — staff-side weekly view (MSv2Body / "Week strip" from the
 // design), backed by scheduled_shifts (migration 0147).
 //
-//   • Greeting + hours-this-week card
+//   • Greeting + hours card for the week being viewed
 //   • 7-card horizontal week strip (only published shifts; drafts hidden)
+//   • Back/forward week browsing (managers plan weeks ahead and every save
+//     is published immediately, so the person working next month needs a
+//     screen that reaches it)
 //   • Open shifts in your dept that you can pick up
-//   • Time-off requests (real list + "+ Request" modal)
+//   • Time-off requests (real list + "+ Request" modal + self-cancel)
 //
 // Requires an active account/property staff link. If absent, render a friendly
 // empty state — the manager has to link the login to the person's schedule
@@ -22,12 +25,17 @@ import type { ScheduledShift, TimeOffRequest } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Btn, Caps } from './_tokens';
 import { Avatar } from './_people';
 import { useWeekShifts } from './useWeekShifts';
-import { fmtRange, sundayOf } from '@/lib/schedule-board';
+import { addDaysYmd, fmtRange, sundayOf } from '@/lib/schedule-board';
 import { isStaffVisibleScheduleStatus } from './staff-shift-visibility';
 import { useStaffDialog } from './useStaffDialog';
 import { useActiveStaffIdentity } from './useActiveStaffIdentity';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 import dialogStyles from './StaffDialog.module.css';
+
+// How far back an employee may page. Matches the manager board's default
+// history window (useScheduleData's WEEKS_BACK), so both sides of the app
+// remember the same amount of the past.
+const WEEKS_BACK_LIMIT = 12;
 
 export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } = {}) {
   const { user } = useAuth();
@@ -68,7 +76,16 @@ function MyShiftsPropertyView({
     const interval = setInterval(refreshToday, 60_000);
     return () => clearInterval(interval);
   }, [activeProperty?.timezone]);
-  const weekStart = useMemo(() => sundayOf(today), [today]);
+  const currentWeekStart = useMemo(() => sundayOf(today), [today]);
+  // Weeks away from the current one. Forward is unbounded (a manager can plan
+  // as far out as they like and every save is live the moment it is made);
+  // back stops at the manager board's own default history window so an
+  // employee can still check what they worked without paging into forever.
+  const [weekOffset, setWeekOffset] = useState(0);
+  const weekStart = useMemo(
+    () => (weekOffset === 0 ? currentWeekStart : addDaysYmd(currentWeekStart, weekOffset * 7)),
+    [currentWeekStart, weekOffset],
+  );
 
   // In demo "preview as staff" mode the page passes the staff row to render
   // as; otherwise this is the logged-in employee's own linked staffId.
@@ -138,8 +155,12 @@ function MyShiftsPropertyView({
   const firstName = me.name.split(/\s+/)[0] || me.name;
   const greeting = `Hi, ${firstName}.`;
 
-  // Open shifts in my dept, in the visible week, that are published (i.e.
-  // visible to staff) and in the future.
+  // Open shifts in my dept, in the week being viewed, that are published
+  // (i.e. visible to staff) and in the future.
+  //
+  // FOLLOWS THE BROWSED WEEK on purpose: an open shift three weeks out was
+  // exactly as unreachable as a future assigned shift, and the `>= today`
+  // filter already stops a browse into the past from offering stale pickups.
   const myDept = asDeptKey(me.department);
   const myDeptLabel = meDept.label.toLowerCase();
   const myOpenShifts = openShifts.filter(o =>
@@ -148,12 +169,28 @@ function MyShiftsPropertyView({
     && o.shiftDate >= today,
   ).sort((a, b) => a.shiftDate.localeCompare(b.shiftDate));
 
-  // My TOR list: pending first, then recent decisions.
+  // My TOR list: pending first, then recent decisions. PINNED TO "ALL MY
+  // REQUESTS", not the browsed week: a request is a standing conversation
+  // with the manager, and hiding it because you paged the calendar would
+  // read as the request having disappeared.
   const myTor = (torByStaff[me.id] ?? []).slice().sort((a, b) => {
     if (a.status === 'pending' && b.status !== 'pending') return -1;
     if (a.status !== 'pending' && b.status === 'pending') return 1;
     return b.submittedAt.getTime() - a.submittedAt.getTime();
   });
+
+  // Week-browsing labels.
+  const weekRangeLabel = `${days[0]?.dateLabel ?? ''} – ${days[6]?.dateLabel ?? ''}`;
+  const hoursCardLabel = weekOffset === 0 ? 'This week'
+    : weekOffset === -1 ? 'Last week'
+    : weekOffset === 1 ? 'Next week'
+    : `Week of ${days[0]?.dateLabel ?? ''}`;
+  const weekPhrase = weekOffset === 0 ? 'this week' : `the week of ${days[0]?.dateLabel ?? ''}`;
+  const weekTag = weekOffset === 0 ? 'THIS WEEK' : weekOffset < 0 ? 'PAST' : 'UPCOMING';
+  const backDisabled = weekOffset <= -WEEKS_BACK_LIMIT;
+  const stepWeek = (dir: 1 | -1) => {
+    setWeekOffset(n => Math.max(-WEEKS_BACK_LIMIT, n + dir));
+  };
 
   return (
     <div className="my-shifts-shell" style={{
@@ -188,12 +225,12 @@ function MyShiftsPropertyView({
               <span>{greeting}</span>
             </h1>
           </div>
-          <HoursCard hrs={myHrs} cap={cap} shifts={myShiftCount} tone={meDept.tone} es={es}/>
+          <HoursCard hrs={myHrs} cap={cap} shifts={myShiftCount} label={hoursCardLabel} tone={meDept.tone} es={es}/>
         </div>
 
         <div style={{
           display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
-          gap: 10, marginBottom: 12,
+          gap: 10, marginBottom: 12, flexWrap: 'wrap',
         }}>
           <div>
             <Caps size={9}>{'My schedule'}</Caps>
@@ -202,9 +239,43 @@ function MyShiftsPropertyView({
               color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
             }}>{'Week at a glance'}</div>
           </div>
-          <span style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.06em' }}>
-            {days[0]?.dateLabel} – {days[6]?.dateLabel}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {weekOffset !== 0 && (
+              <button
+                type="button"
+                onClick={() => setWeekOffset(0)}
+                style={weekJumpStyle}
+              >{'This week'}</button>
+            )}
+            <button
+              type="button"
+              onClick={() => stepWeek(-1)}
+              disabled={backDisabled}
+              aria-label={'Previous week'}
+              title={backDisabled ? 'No earlier weeks' : 'Previous week'}
+              style={weekArrowStyle(backDisabled)}
+            >‹</button>
+            <span aria-live="polite" style={{
+              display: 'inline-flex', alignItems: 'center', gap: 8,
+              fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.06em',
+              whiteSpace: 'nowrap',
+            }}>
+              {weekRangeLabel}
+              <span style={{
+                fontFamily: fonts.mono, fontSize: 8.5, fontWeight: 700, letterSpacing: '0.08em',
+                color: weekOffset === 0 ? T.brand : T.ink3,
+                border: `1px solid ${weekOffset === 0 ? T.brand : T.rule}`,
+                padding: '2px 7px', borderRadius: 999,
+              }}>{weekTag}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => stepWeek(1)}
+              aria-label={'Next week'}
+              title={'Next week'}
+              style={weekArrowStyle(false)}
+            >›</button>
+          </div>
         </div>
 
         {/* Week strip */}
@@ -277,6 +348,7 @@ function MyShiftsPropertyView({
           <OpenShiftsCard
             shifts={myOpenShifts}
             myDept={myDeptLabel}
+            weekPhrase={weekPhrase}
             hotelId={activePropertyId ?? ''}
             scopeKey={scopeKey}
             onReconcile={retryShifts}
@@ -284,7 +356,10 @@ function MyShiftsPropertyView({
           />
           <TimeOffCard
             requests={myTor}
+            hotelId={activePropertyId ?? ''}
+            scopeKey={scopeKey}
             onAddRequest={() => setRequestOpen(true)}
+            onReconcile={retryShifts}
             es={es}
           />
         </div>
@@ -335,10 +410,32 @@ function MyShiftsLoadState({
   );
 }
 
+// ── Week navigation control styles ─────────────────────────────────────────
+// 44px targets: these are the primary controls for reaching a future week on
+// a phone, which is where most employees open this page.
+function weekArrowStyle(disabled: boolean): React.CSSProperties {
+  return {
+    minWidth: 44, minHeight: 44, padding: 0,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 12, border: `1px solid ${T.rule}`, background: T.paper,
+    color: disabled ? T.ink3 : T.ink, cursor: disabled ? 'default' : 'pointer',
+    fontFamily: fonts.sans, fontSize: 18, lineHeight: 1,
+    opacity: disabled ? 0.45 : 1,
+  };
+}
+
+const weekJumpStyle: React.CSSProperties = {
+  minHeight: 44, padding: '0 14px',
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+  borderRadius: 999, border: `1px solid ${T.rule}`, background: T.paper,
+  color: T.ink, cursor: 'pointer',
+  fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap',
+};
+
 // ── Hours card ─────────────────────────────────────────────────────────────
 function HoursCard({
-  hrs, cap, shifts, tone, es,
-}: { hrs: number; cap: number; shifts: number; tone: string; es: boolean }) {
+  hrs, cap, shifts, label, tone, es,
+}: { hrs: number; cap: number; shifts: number; label: string; tone: string; es: boolean }) {
   const pct = Math.min(1, cap > 0 ? hrs / cap : 0);
   return (
     <div style={{
@@ -346,7 +443,7 @@ function HoursCard({
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
       boxShadow: T.cardShadow,
     }}>
-      <Caps size={9}>{'This week'}</Caps>
+      <Caps size={9}>{label}</Caps>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 4, gap: 12 }}>
         <span style={{
           fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, color: T.ink,
@@ -378,10 +475,12 @@ function hoursBetween(start: string, end: string): number {
 
 // ── Open shifts card ──────────────────────────────────────────────────────
 function OpenShiftsCard({
-  shifts, myDept, hotelId, scopeKey, onReconcile, es,
+  shifts, myDept, weekPhrase, hotelId, scopeKey, onReconcile, es,
 }: {
   shifts: ScheduledShift[];
   myDept: string;
+  /** 'this week' or 'the week of Aug 17', matching what the strip shows. */
+  weekPhrase: string;
   hotelId: string;
   scopeKey: string;
   onReconcile: () => void;
@@ -482,7 +581,7 @@ function OpenShiftsCard({
           padding: '22px 18px', textAlign: 'center', flex: 1,
           fontFamily: fonts.sans, fontSize: 13,
           color: T.ink3, letterSpacing: '0',
-        }}>{`No open shifts in ${myDept} this week.`}</div>
+        }}>{`No open shifts in ${myDept} ${weekPhrase}.`}</div>
       ) : (
         <div>
           {shifts.map(s => (
@@ -542,8 +641,75 @@ function dateLabelFromYmd(ymd: string): string {
 
 // ── Time-off card ─────────────────────────────────────────────────────────
 function TimeOffCard({
-  requests, onAddRequest, es,
-}: { requests: TimeOffRequest[]; onAddRequest: () => void; es: boolean }) {
+  requests, hotelId, scopeKey, onAddRequest, onReconcile, es,
+}: {
+  requests: TimeOffRequest[];
+  hotelId: string;
+  scopeKey: string;
+  onAddRequest: () => void;
+  onReconcile: () => void;
+  es: boolean;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const actionScopeRef = React.useRef<string | null>(scopeKey);
+  const actionAttemptRef = React.useRef(0);
+  const actionInFlightRef = React.useRef(false);
+  React.useEffect(() => {
+    actionScopeRef.current = scopeKey;
+    return () => {
+      if (actionScopeRef.current === scopeKey) actionScopeRef.current = null;
+      actionAttemptRef.current += 1;
+      actionInFlightRef.current = false;
+    };
+  }, [scopeKey]);
+
+  const cancelRequest = async (id: string) => {
+    if (actionInFlightRef.current) return;
+    const requestedHotelId = hotelId;
+    const attempt = ++actionAttemptRef.current;
+    const ownsAttempt = () => (
+      actionScopeRef.current === scopeKey
+      && actionAttemptRef.current === attempt
+    );
+    actionInFlightRef.current = true;
+    setBusyId(id);
+    setErrorMsg(null);
+    let responseReceived = false;
+    try {
+      const res = await fetchWithAuth(
+        `/api/staff-schedule/time-off?hotelId=${encodeURIComponent(requestedHotelId)}&id=${encodeURIComponent(id)}`,
+        { method: 'DELETE', timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS },
+      );
+      if (!ownsAttempt()) return;
+      responseReceived = true;
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        if (!ownsAttempt()) return;
+        throw new Error(b?.error || 'Could not cancel the request');
+      }
+      setConfirmId(null);
+      // Realtime normally pushes this, but a fresh scoped snapshot is the
+      // source of truth if the subscription was reconnecting or delayed.
+      onReconcile();
+    } catch (e) {
+      if (!ownsAttempt()) return;
+      if (!responseReceived) {
+        onReconcile();
+        if (!ownsAttempt()) return;
+        setErrorMsg("We couldn't confirm whether the request was cancelled. We're refreshing your list before you try again.");
+      } else {
+        setErrorMsg(e instanceof Error ? e.message : 'Could not cancel the request');
+      }
+    } finally {
+      if (ownsAttempt()) {
+        actionInFlightRef.current = false;
+        setBusyId(null);
+      }
+    }
+  };
+
   return (
     <div style={{
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
@@ -571,14 +737,43 @@ function TimeOffCard({
         }}>{'No active requests.'}</div>
       ) : (
         <div>
-          {requests.slice(0, 8).map(r => <TorRow key={r.id} r={r} es={es}/>)}
+          {requests.slice(0, 8).map(r => (
+            <TorRow
+              key={r.id}
+              r={r}
+              confirming={confirmId === r.id}
+              busy={busyId === r.id}
+              disabled={busyId !== null}
+              onAskCancel={() => { setErrorMsg(null); setConfirmId(r.id); }}
+              onKeep={() => setConfirmId(null)}
+              onConfirmCancel={() => { void cancelRequest(r.id); }}
+              es={es}
+            />
+          ))}
+          {errorMsg && (
+            <div role="alert" style={{
+              padding: '10px 16px', fontSize: 12, color: '#B85C3D',
+              background: 'rgba(184,92,61,0.08)',
+            }}>{errorMsg}</div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function TorRow({ r, es }: { r: TimeOffRequest; es: boolean }) {
+function TorRow({
+  r, confirming, busy, disabled, onAskCancel, onKeep, onConfirmCancel, es,
+}: {
+  r: TimeOffRequest;
+  confirming: boolean;
+  busy: boolean;
+  disabled: boolean;
+  onAskCancel: () => void;
+  onKeep: () => void;
+  onConfirmCancel: () => void;
+  es: boolean;
+}) {
   const palette: Record<string, { fg: string; bg: string; br: string; label: string; icon: string }> = {
     pending:  { fg: '#8C6A33', bg: 'rgba(201,150,68,0.14)', br: 'rgba(140,106,51,0.32)', label: 'Pending',  icon: '⏱' },
     approved: { fg: '#356B4C', bg: 'rgba(53,107,76,0.10)',  br: 'rgba(53,107,76,0.30)',  label: 'Approved', icon: '✓' },
@@ -618,6 +813,32 @@ function TorRow({ r, es }: { r: TimeOffRequest; es: boolean }) {
           <div style={{ fontFamily: fonts.sans, fontSize: 11, color: '#B85C3D', marginTop: 2 }}>
             {'Reason'}: {r.denyReason}
           </div>
+        )}
+        {r.status === 'pending' && (
+          confirming ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink2 }}>
+                {'Take this request back?'}
+              </span>
+              <Btn variant="ghost" size="sm" onClick={onKeep} disabled={busy}>{'Keep it'}</Btn>
+              <Btn variant="primary" size="sm" onClick={onConfirmCancel} disabled={busy}>
+                {busy ? ('Cancelling…') : ('Yes, cancel')}
+              </Btn>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onAskCancel}
+              disabled={disabled}
+              style={{
+                marginTop: 7, minHeight: 32, padding: '0 10px',
+                display: 'inline-flex', alignItems: 'center',
+                background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: 999,
+                fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 600, color: T.ink2,
+                cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1,
+              }}
+            >{'Cancel request'}</button>
+          )
         )}
       </div>
     </div>

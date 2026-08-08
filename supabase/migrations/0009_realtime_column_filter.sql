@@ -35,6 +35,28 @@
 --   the WAL replica record. So existing UPDATE/DELETE detection still
 --   works.
 --
+-- ── CORRECTION (2026-08-07): THE NOTE ABOVE IS WRONG. DO NOT ACT ON IT. ──
+--   Postgres REQUIRES a publication's column list to be a SUPERSET of the
+--   table's replica identity columns. REPLICA IDENTITY FULL means "every
+--   column", so FULL alongside a column list is illegal and every UPDATE to
+--   the table fails with:
+--
+--       ERROR 42P10: cannot update table "staff"
+--
+--   This note is not a harmless inaccuracy — it is the root cause of a repeat
+--   outage. Migration 0013 reverted the FULL that 0006 set here. Migration
+--   0133 ("cost audit: REPLICA IDENTITY FULL on hot realtime tables") then set
+--   it again on `staff` and `shift_confirmations`, and the Staff Priority
+--   modal, the person editor, activate/deactivate and vacation-date edits all
+--   failed in production until 0267 reverted it a second time.
+--
+--   `staff` and `shift_confirmations` MUST stay at REPLICA IDENTITY DEFAULT.
+--   That is safe for this app: subscribeTable in src/lib/db/_common.ts refetches
+--   the row on any change event and never diffs the OLD payload. The rule is
+--   now pinned by src/lib/__tests__/staff-realtime-replica-identity.test.ts.
+--
+--   Nothing below this line is changed; only the comment above is corrected.
+--
 -- Safe to re-run: idempotent guards check each ALTER PUBLICATION step.
 -- ═══════════════════════════════════════════════════════════════════════════
 

@@ -499,7 +499,6 @@ describe('My Hotel People mounted identity and actions', { concurrency: false },
       root.render(
         <PersonEmploymentForm
           hotelId={HOTEL_ID}
-          uid={currentUser().uid}
           lang="en"
           staff={staff({ isActive: true })}
           accounts={accounts}

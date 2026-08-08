@@ -15,13 +15,13 @@ import {
   parseHotelActingContext,
   type HotelActingContextV1,
 } from '@/lib/portfolio-ui/hotel-acting-contract';
+import {
+  resolveActingScopeRequest,
+  type ActingAuthorizationStatus,
+  type ActingScopeRequest,
+} from '@/lib/portfolio-ui/acting-scope';
 
-export type HotelActingAuthorizationStatus =
-  | 'inactive'
-  | 'checking'
-  | 'allowed'
-  | 'denied'
-  | 'error';
+export type HotelActingAuthorizationStatus = ActingAuthorizationStatus;
 
 interface AuthorizationSnapshot {
   requestIdentity: string;
@@ -37,6 +37,16 @@ export interface HotelActingContextValue {
   httpStatus: number | null;
   /** True for company/region/subset pages and portfolio-origin hotel views. */
   portfolioScoped: boolean;
+  /**
+   * WHAT THIS LOCATION ASKS THE APP TO BE POINTED AT.
+   *
+   * The seam every scope-aware consumer reads instead of re-deriving hotel and
+   * company scope from the URL. A hotel becomes hotel scope only once `status`
+   * is `allowed`; everything else is `unresolved`, which the capability and
+   * section gates both read as closed. PropertyContext turns this into the
+   * RESOLVED `AppScope` once it knows the viewer's coverage.
+   */
+  scope: ActingScopeRequest;
   retry: () => void;
 }
 
@@ -259,6 +269,7 @@ export function HotelActingProvider({ children }: { children: React.ReactNode })
     context,
     httpStatus,
     portfolioScoped: request.kind === 'portfolio_scope' || context?.source === 'portfolio',
+    scope: resolveActingScopeRequest({ request, status }),
     retry: invalidate,
   }), [context, httpStatus, invalidate, request, status]);
 

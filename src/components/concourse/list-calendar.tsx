@@ -156,8 +156,24 @@ export function isoDay(d: Date): string {
  * Its due date, and nothing else. Deliberately NOT falling back to when it was
  * created: "created on Tuesday" put on Tuesday's square reads as "due Tuesday",
  * and a calendar that invents deadlines is worse than one with gaps in it.
+ *
+ * ─── whose Tuesday ─────────────────────────────────────────────────────────
+ * The HOTEL's, and the server is the only side that can say. `dueDate` is an
+ * instant, and "due today" is stored as the last millisecond of the hotel's
+ * day: 23:59:59.999 in Beaumont is 00:59 the NEXT morning in New York. Reading
+ * the day off it in the browser therefore moved every dated row one square
+ * forward for any reader east of the hotel, so a VP covering two zones saw
+ * dots on the wrong days and an empty page when they clicked the right one.
+ * Invisible to a manager sitting in their own hotel, which is why it survived.
+ *
+ * `dueDay` is that answer, worked out server-side in the hotel's calendar. The
+ * instant is still read when it is absent, so a row from an older payload, or
+ * one of the sources that genuinely carries only a moment, lands exactly where
+ * it always did.
  */
-export function dayOf(item: Pick<WorklistItem, 'dueDate'>): string | null {
+export function dayOf(item: Pick<WorklistItem, 'dueDate' | 'dueDay'>): string | null {
+  const day = item.dueDay;
+  if (typeof day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day)) return day;
   if (!item.dueDate) return null;
   const t = Date.parse(item.dueDate);
   if (Number.isNaN(t)) return null;
