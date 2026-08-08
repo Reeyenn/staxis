@@ -55,7 +55,7 @@ then updated only those IDs under all tenant/title/creator/active predicates:
 
 ```text
 set -a; source ~/.config/staxis/tokens.env; set +a
-PGSSLMODE=require PGPASSWORD='[redacted]' psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+PGSSLMODE=require PGPASSWORD="$SUPABASE_DB_PASSWORD" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
   --host "$SUPABASE_DB_HOST" --port 5432 \
   --username "postgres.$SUPABASE_PROJECT_REF" --dbname postgres <<'SQL'
 BEGIN;
