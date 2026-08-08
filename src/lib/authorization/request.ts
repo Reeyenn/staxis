@@ -176,7 +176,15 @@ export function createRequestAuthorizationWithDependencies(
           // Reach is always resolved before property-specific section or
           // capability state. This ordering prevents cross-hotel probes from
           // learning whether another hotel's feature switches are configured.
-          const account = await dependencies.loadAccount(principal.authUserId);
+          let account: AccountResolution;
+          try {
+            account = await dependencies.loadAccount(principal.authUserId);
+          } catch {
+            // A dependency seam must fail closed with the same retryable reach
+            // verdict as the production account store, never escape as a route
+            // 500 before the caller can apply its refusal contract.
+            account = { kind: 'unavailable' };
+          }
           if (account.kind === 'denied') return { ok: false, reason: 'account_denied' };
           if (account.kind === 'unavailable') {
             return { ok: false, reason: 'account_unavailable' };
@@ -261,14 +269,18 @@ export function createRequestAuthorizationWithDependencies(
 const productionDependencies: RequestAuthorizationDependencies = {
   requireSession: requireExistingSession,
   async loadAccount(authUserId) {
-    const { data, error } = await supabaseAdmin
-      .from('accounts')
-      .select('id, active')
-      .eq('data_user_id', authUserId)
-      .maybeSingle();
-    if (error) return { kind: 'unavailable' };
-    if (!data || data.active !== true) return { kind: 'denied' };
-    return { kind: 'active', accountId: data.id as string };
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('accounts')
+        .select('id, active')
+        .eq('data_user_id', authUserId)
+        .maybeSingle();
+      if (error) return { kind: 'unavailable' };
+      if (!data || data.active !== true) return { kind: 'denied' };
+      return { kind: 'active', accountId: data.id as string };
+    } catch {
+      return { kind: 'unavailable' };
+    }
   },
   loadAuthority: listAuthoritativePropertyAccess,
   capabilityDecision(standing, capability, propertyId, freshness) {
