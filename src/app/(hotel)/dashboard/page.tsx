@@ -39,7 +39,6 @@ import { RoomRing, type RingTick } from '@/app/dashboard/_components/RoomRing';
 import { buildRoomRingTicks } from '@/app/dashboard/_components/room-ring-model';
 import { MetricChart } from '@/app/dashboard/_components/MetricChart';
 import { Sparkline } from '@/app/dashboard/_components/Sparkline';
-import { MemoryRecapCard } from '@/app/dashboard/_components/MemoryRecapCard';
 import { LogBookCard } from '@/app/dashboard/_components/LogBookCard';
 import { CalendarCard } from '@/app/dashboard/_components/CalendarCard';
 import { subscribeToRooms } from '@/lib/db';
@@ -731,9 +730,6 @@ function DashboardWorkspace() {
 
           {/* Upcoming team calendar events; renders only once there's at least one upcoming */}
           <CalendarCard />
-
-          {/* What Staxis learned — self-learning Move #2; renders only once populated */}
-          <MemoryRecapCard />
 
         </div>
       </div>
