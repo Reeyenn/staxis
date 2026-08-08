@@ -71,6 +71,21 @@ export function visibleHotelConversations(
     : conversations.filter((conversation) => conversation.propertyId === filter);
 }
 
+/**
+ * Resolve the hotel for an interaction that must call a pid-scoped endpoint.
+ *
+ * A specific hotel filter is already an explicit choice. In All hotels mode,
+ * only the selected conversation supplies a safe pid; with neither choice the
+ * caller must ask the person to choose a hotel instead of guessing.
+ */
+export function resolveHotelActionPropertyId(input: {
+  selectedPropertyId: string | null;
+  hotelFilter: string;
+}): string | null {
+  if (input.hotelFilter !== ALL_HOTELS_FILTER) return input.hotelFilter || null;
+  return input.selectedPropertyId;
+}
+
 /** Preserve the bootstrap's attention-first ordering across hotel buckets. */
 export function sortHotelConversations(conversations: HotelConversation[]): HotelConversation[] {
   return conversations.slice().sort((left, right) => {

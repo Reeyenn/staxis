@@ -8,10 +8,13 @@ import {
   conversationsWithHotelContext,
   hotelConversationKey,
   hotelScopeOptions,
+  resolveHotelActionPropertyId,
   sortHotelConversations,
   visibleHotelConversations,
   type HotelBootstrap,
 } from '@/app/communications/_components/comms-hotels';
+
+const overlaysSource = readFileSync(join(process.cwd(), 'src/app/communications/_components/CommsOverlays.tsx'), 'utf8');
 
 const HOTEL_A = '11111111-1111-4111-8111-111111111111';
 const HOTEL_B = '22222222-2222-4222-8222-222222222222';
@@ -92,10 +95,30 @@ describe('Messages hotel scope/filter composition', () => {
     ]).map((c) => c.id), ['urgent', 'older']);
   });
 
+  test('pid-scoped actions require an explicit hotel in All hotels mode', () => {
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: HOTEL_B, hotelFilter: ALL_HOTELS_FILTER }), HOTEL_B);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: HOTEL_A }), HOTEL_A);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: HOTEL_B, hotelFilter: HOTEL_A }), HOTEL_A);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: ALL_HOTELS_FILTER }), null);
+  });
+
   test('new hotel selector is labeled and has a mobile-sized target', () => {
     const source = readFileSync(join(process.cwd(), 'src/app/communications/_components/CommsApp.tsx'), 'utf8');
     assert.match(source, /aria-label=\{'Filter messages by hotel'\}/);
     assert.match(source, /<option value=\{ALL_HOTELS_FILTER\}>\{'All hotels'\}<\/option>/);
     assert.match(source, /minHeight: 44/);
+    assert.match(source, /Choose a hotel before searching Messages\./);
+    assert.match(source, /Choose a hotel before starting a message\./);
+    assert.match(source, /searchOpen && searchPropertyId && <SearchPalette pid=\{searchPropertyId\}/);
+    assert.match(source, /onPick=\{\(staffId\) => void openDm\(staffId, newMessagePropertyId\)\}/);
+  });
+
+  test('new message overlay keeps mobile-safe input and Escape close behavior', () => {
+    const modalStart = overlaysSource.indexOf('export function NewMessageModal');
+    assert.ok(modalStart >= 0);
+    const modal = overlaysSource.slice(modalStart);
+    assert.match(modal, /CommsOverlay onClose=\{onClose\}[^\n]*escToClose/);
+    assert.match(modal, /minHeight: 44/);
+    assert.match(modal, /fontSize: 16/);
   });
 });

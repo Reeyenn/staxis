@@ -31,6 +31,7 @@ import {
   conversationsWithHotelContext,
   hotelConversationKey,
   hotelScopeOptions,
+  resolveHotelActionPropertyId,
   sortHotelConversations,
   visibleHotelConversations,
   type HotelBootstrap,
@@ -245,7 +246,9 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
   const [threadParent, setThreadParent] = React.useState<MessageDTO | null>(null);
   const [panel, setPanel] = React.useState<RightPanel>(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const [searchPropertyId, setSearchPropertyId] = React.useState<string | null>(null);
   const [showNew, setShowNew] = React.useState(false);
+  const [newMessagePropertyId, setNewMessagePropertyId] = React.useState<string | null>(null);
   const [memberCount, setMemberCount] = React.useState<number | null>(null);
   const [mobileDetail, setMobileDetail] = React.useState(false);
   const [messagesLoading, setMessagesLoading] = React.useState(false);
@@ -547,11 +550,37 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
     setMode('chats'); setThreadParent(null); setPanel(null); setMobileDetail(true);
   };
   const switchMode = (m: ViewMode) => { setMode(m); setMobileDetail(true); if (m !== 'chats') { setThreadParent(null); setPanel(null); } };
-  const jump = (id: string) => { if (selectedPid) selectConversation(id, selectedPid); setSearchOpen(false); };
   const openThread = (m: MessageDTO) => { setPanel(null); setThreadParent((cur) => (cur?.id === m.id ? null : m)); };
   const togglePanel = (p: Exclude<RightPanel, null>) => { setThreadParent(null); setPanel((cur) => (cur === p ? null : p)); };
   const showMobileList = () => { setMobileDetail(false); setThreadParent(null); setPanel(null); };
   const actionFailed = (message: string) => setMutationError(message);
+  const closeSearch = () => { setSearchOpen(false); setSearchPropertyId(null); };
+  const closeNewMessage = () => { setShowNew(false); setNewMessagePropertyId(null); };
+  const jump = (id: string, propertyId: string | null) => { if (propertyId) selectConversation(id, propertyId); closeSearch(); };
+  const beginSearch = () => {
+    const propertyId = resolveHotelActionPropertyId({ selectedPropertyId: selConvo?.propertyId ?? null, hotelFilter });
+    if (!propertyId) {
+      actionFailed('Choose a hotel before searching Messages.');
+      return;
+    }
+    setMutationError(null);
+    setSearchPropertyId(propertyId);
+    setSearchOpen(true);
+  };
+  const beginNewMessage = () => {
+    const propertyId = resolveHotelActionPropertyId({ selectedPropertyId: selConvo?.propertyId ?? null, hotelFilter });
+    if (!propertyId) {
+      actionFailed('Choose a hotel before starting a message.');
+      return;
+    }
+    if (!hotelBootstraps.some((bootstrap) => bootstrap.propertyId === propertyId)) {
+      actionFailed('That hotel is not ready for Messages yet. Try again.');
+      return;
+    }
+    setMutationError(null);
+    setNewMessagePropertyId(propertyId);
+    setShowNew(true);
+  };
 
   const reactToggle = async (m: MessageDTO) => {
     if (!selectedPid) return;
@@ -579,12 +608,17 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
     // the more annoying of the two wrong answers.
     setTaskNotice('Added to your Staxis list.');
   };
-  const openDm = async (staffId: string) => {
-    if (!selectedPid) return;
+  const openDm = async (staffId: string, interactionPropertyId?: string | null) => {
+    const propertyId = interactionPropertyId
+      ?? resolveHotelActionPropertyId({ selectedPropertyId: selConvo?.propertyId ?? null, hotelFilter });
+    if (!propertyId) {
+      actionFailed('Choose a hotel before starting a message.');
+      return;
+    }
     setMutationError(null);
-    const r = await apiPost<{ conversationId: string }>('/api/comms/dm', { pid: selectedPid, otherStaffId: staffId });
+    const r = await apiPost<{ conversationId: string }>('/api/comms/dm', { pid: propertyId, otherStaffId: staffId });
     if (!r.ok || !r.data?.conversationId) { actionFailed('Could not start the direct message. Please try again.'); return; }
-    await loadBoot(); selectConversation(r.data.conversationId, selectedPid); setShowNew(false); setSearchOpen(false);
+    await loadBoot(); selectConversation(r.data.conversationId, propertyId); closeNewMessage(); closeSearch();
   };
 
   if (!mounted) {
@@ -665,7 +699,7 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
         </div>
 
         <div style={{ padding: '10px 12px 6px' }}>
-          <button onClick={() => setSearchOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 11px', borderRadius: 8, border: `1px solid ${T.hair}`, background: T.paper, color: T.dim, cursor: 'pointer', fontFamily: SANS, fontSize: 13 }}>
+          <button onClick={beginSearch} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 11px', borderRadius: 8, border: `1px solid ${T.hair}`, background: T.paper, color: T.dim, cursor: 'pointer', fontFamily: SANS, fontSize: 13 }}>
             <Search size={14} /> {'Jump to or search…'}
           </button>
         </div>
@@ -717,7 +751,7 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
                     onLoadOlder={() => void loadOlderMessages()}
                     activeThreadId={threadParent?.id ?? null} activePanel={panel} scrollRef={scrollRef}
                     onReloadThread={() => loadThread(false, true)} onReloadBoot={loadBoot} onOpenThread={openThread} onTogglePanel={togglePanel}
-                    onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={() => setSearchOpen(true)} />
+                    onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={beginSearch} />
                 : <EmptyHint text={'Pick a conversation, or start a new message.'} />}
               {right}
             </>
@@ -726,8 +760,16 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
       </div>
 
       {/* ── Overlays ── */}
-      {searchOpen && selectedPid && <SearchPalette pid={selectedPid} hotelName={hotelFilter === ALL_HOTELS_FILTER ? selectedBootstrap?.propertyName : undefined} L={L} onClose={() => setSearchOpen(false)} onJump={jump} onOpenDm={openDm} />}
-      {showNew && boot && <NewMessageModal staff={boot.staff} hotelName={hotelFilter === ALL_HOTELS_FILTER ? selectedBootstrap?.propertyName : undefined} L={L} onPick={openDm} onClose={() => setShowNew(false)} />}
+      {searchOpen && searchPropertyId && <SearchPalette pid={searchPropertyId} hotelName={hotelFilter === ALL_HOTELS_FILTER ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === searchPropertyId)?.propertyName : undefined} L={L} onClose={closeSearch} onJump={(id) => jump(id, searchPropertyId)} onOpenDm={(staffId) => void openDm(staffId, searchPropertyId)} />}
+      {showNew && newMessagePropertyId && hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId) && (
+        <NewMessageModal
+          staff={hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId)!.data.staff}
+          hotelName={hotelFilter === ALL_HOTELS_FILTER ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId)?.propertyName : undefined}
+          L={L}
+          onPick={(staffId) => void openDm(staffId, newMessagePropertyId)}
+          onClose={closeNewMessage}
+        />
+      )}
 
       {(bootError || selectedHotelFailure || hotelBootstrapFailures.some((failure) => !failure.unauthorized) || mutationError || taskNotice) && (
         <div className="comms-alert-stack">

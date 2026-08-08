@@ -114,13 +114,13 @@ export function NewMessageModal({ staff, hotelName, L, onPick, onClose }: { staf
   const [q, setQ] = React.useState('');
   const filtered = staff.filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
   return (
-    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)"
+    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)" escToClose
       cardStyle={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '92%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.2)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hair}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontWeight: 700, fontFamily: SANS, fontSize: 15 }}>{'New message'}{hotelName ? <span style={{ fontWeight: 500, color: T.dim, fontSize: 11.5 }}>{` · ${hotelName}`}</span> : null}</span>
           <button onClick={onClose} aria-label={'Close new message'} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} aria-hidden="true" /></button>
         </div>
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={'Search staff…'} style={{ margin: 14, padding: '10px 12px', border: `1px solid ${T.hair}`, borderRadius: 10, fontFamily: SANS, fontSize: 14, outline: 'none' }} />
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={'Search staff…'} style={{ margin: 14, minHeight: 44, padding: '10px 12px', border: `1px solid ${T.hair}`, borderRadius: 10, fontFamily: SANS, fontSize: 16, outline: 'none' }} />
         <div style={{ overflowY: 'auto' }}>
           {filtered.map((s) => (
             <button key={s.id} onClick={() => onPick(s.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', padding: '10px 18px', background: 'transparent', border: 'none', borderBottom: `1px solid ${T.hairSoft}`, cursor: 'pointer', fontFamily: SANS, fontSize: 14 }}>
