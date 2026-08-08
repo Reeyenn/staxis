@@ -44,8 +44,9 @@ const TOTAL_READ_DEADLINE_MS = 30_000;
 const PER_HOTEL_DEADLINE_MS = 7_000;
 export const MAX_MULTI_HOTEL_RESPONSE_ROWS = 5_000;
 export const MAX_MULTI_HOTEL_RESPONSE_BYTES = 3_000_000;
-/** Reserve envelope/coverage bytes so the serialized API response stays bounded. */
-const RESPONSE_OVERHEAD_RESERVE_BYTES = 16_384;
+/** Reserve route/envelope bytes so the serialized API response stays bounded. */
+const RESPONSE_WRAPPER_RESERVE_BYTES = 64 * 1024;
+const RESPONSE_SCALAR_RESERVE_BYTES = 8 * 1024;
 
 /**
  * Reply counts are bounded in proportion to the per-hotel entry window. A
@@ -168,7 +169,7 @@ function coverageFor(
   const attempted = scope.hotels.length;
   const truncated = stats.rowsOmitted > 0
     || stats.sourceTruncated
-    || stats.responseBytesEstimated > MAX_MULTI_HOTEL_RESPONSE_BYTES - RESPONSE_OVERHEAD_RESERVE_BYTES;
+    || stats.responseBytesEstimated > MAX_MULTI_HOTEL_RESPONSE_BYTES - RESPONSE_WRAPPER_RESERVE_BYTES;
   return {
     authorizedHotelCount: scope.authorizedPropertyIds.length,
     attemptedHotelCount: attempted,
@@ -239,39 +240,106 @@ export function buildMultiHotelRowsPayload(input: {
     : input.surface === 'assigned-by-me'
       ? allAssigned
       : allItems;
-  const labelsJson = JSON.stringify(input.scope.hotels.map(labelFor));
-  const labelsBytes = Buffer.byteLength(labelsJson, 'utf8');
-  const rowByteBudget = Math.max(0, MAX_MULTI_HOTEL_RESPONSE_BYTES - RESPONSE_OVERHEAD_RESERVE_BYTES);
-  const maxBytesForRows = Math.max(0, rowByteBudget - labelsBytes);
-  const selectedRows: typeof allRows = [];
-  let responseBytesEstimated = labelsBytes;
-  for (const row of allRows) {
-    if (selectedRows.length >= MAX_MULTI_HOTEL_RESPONSE_ROWS) break;
-    const rowBytes = Buffer.byteLength(JSON.stringify(row), 'utf8');
-    if (responseBytesEstimated + rowBytes > rowByteBudget
-      || responseBytesEstimated - labelsBytes + rowBytes > maxBytesForRows) break;
-    selectedRows.push(row);
-    responseBytesEstimated += rowBytes;
+  const hotels = input.scope.hotels.map(labelFor);
+  const attemptedScope = { ...input.scope, hotels: [...input.attemptedHotels] };
+  const unavailable = [...input.unavailable];
+  const sourceTruncated = input.sourceTruncated === true;
+  const rowsKey = input.surface === 'logbook'
+    ? 'entries'
+    : input.surface === 'assigned-by-me'
+      ? 'assigned'
+      : 'items';
+
+  type ClientAggregatePayload = {
+    surface: MultiHotelSurface;
+    hotels: MultiHotelLabel[];
+    coverage: MultiHotelCoverage;
+    entries?: MultiHotelLogEntry[];
+    assigned?: MultiHotelAssignedItem[];
+    items?: MultiHotelKnowsItem[];
+    ready: boolean;
+  };
+
+  function payloadFor(
+    rows: typeof allRows,
+    coverage: MultiHotelCoverage,
+  ): ClientAggregatePayload {
+    return {
+      surface: input.surface,
+      hotels,
+      coverage,
+      ...(rowsKey === 'entries' ? { entries: rows as MultiHotelLogEntry[] } : {}),
+      ...(rowsKey === 'assigned' ? { assigned: rows as MultiHotelAssignedItem[] } : {}),
+      ...(rowsKey === 'items' ? { items: rows as MultiHotelKnowsItem[] } : {}),
+      ready: coverage.complete,
+    };
   }
-  const rowsOmitted = Math.max(0, allRows.length - selectedRows.length);
-  const entries = input.surface === 'logbook' ? selectedRows as MultiHotelLogEntry[] : [];
-  const assigned = input.surface === 'assigned-by-me' ? selectedRows as MultiHotelAssignedItem[] : [];
-  const items = input.surface === 'knows' ? selectedRows as MultiHotelKnowsItem[] : [];
-  return {
-    coverage: coverageFor(
-      { ...input.scope, hotels: [...input.attemptedHotels] },
-      [...input.unavailable],
+
+  function stabilize(rows: typeof allRows): {
+    coverage: MultiHotelCoverage;
+    bytes: number;
+  } {
+    const rowsOmitted = Math.max(allRows.length - rows.length, sourceTruncated ? 1 : 0);
+    let responseBytesEstimated = 0;
+    for (let attempt = 0; attempt < 32; attempt += 1) {
+      const coverage = coverageFor(
+        attemptedScope,
+        unavailable,
+        {
+          rowsReturned: rows.length,
+          rowsOmitted,
+          responseBytesEstimated,
+          sourceTruncated,
+        },
+      );
+      const bytes = Buffer.byteLength(JSON.stringify(payloadFor(rows, coverage)), 'utf8');
+      if (bytes === responseBytesEstimated) return { coverage, bytes };
+      responseBytesEstimated = bytes;
+    }
+    // The response estimate is a scalar in the payload, so its UTF-8 JSON
+    // width reaches a fixed point quickly. Keep the last measured payload only
+    // as a defensive fallback; normal inputs return from the loop above with
+    // coverage.responseBytesEstimated exactly equal to the serialized bytes.
+    const coverage = coverageFor(
+      attemptedScope,
+      unavailable,
       {
-        rowsReturned: selectedRows.length,
-        rowsOmitted: Math.max(rowsOmitted, input.sourceTruncated ? 1 : 0),
-        responseBytesEstimated,
-        sourceTruncated: input.sourceTruncated === true,
+        rowsReturned: rows.length,
+        rowsOmitted,
+        responseBytesEstimated: responseBytesEstimated,
+        sourceTruncated,
       },
-    ),
-    hotels: input.scope.hotels.map(labelFor),
-    entries,
-    assigned,
-    items,
+    );
+    const bytes = Buffer.byteLength(JSON.stringify(payloadFor(rows, coverage)), 'utf8');
+    return { coverage, bytes };
+  }
+
+  const internalBudget = Math.max(0, MAX_MULTI_HOTEL_RESPONSE_BYTES - RESPONSE_WRAPPER_RESERVE_BYTES);
+  const rowBytes = allRows.map((row) => Buffer.byteLength(JSON.stringify(row), 'utf8'));
+  const empty = stabilize([]);
+  let selectedCount = 0;
+  let selectedBytes = 0;
+  const conservativeBudget = Math.max(0, internalBudget - RESPONSE_SCALAR_RESERVE_BYTES);
+  while (selectedCount < allRows.length && selectedCount < MAX_MULTI_HOTEL_RESPONSE_ROWS) {
+    const nextBytes = rowBytes[selectedCount]!;
+    // Two bytes per row conservatively accounts for array brackets/commas;
+    // exact payload sizing below is the final authority.
+    if (empty.bytes + selectedBytes + nextBytes + (selectedCount + 1) * 2 > conservativeBudget) break;
+    selectedBytes += nextBytes;
+    selectedCount += 1;
+  }
+  let selectedRows = allRows.slice(0, selectedCount);
+  let stabilized = stabilize(selectedRows);
+  while (stabilized.bytes > internalBudget && selectedRows.length > 0) {
+    selectedRows = selectedRows.slice(0, -1);
+    stabilized = stabilize(selectedRows);
+  }
+  return {
+    coverage: stabilized.coverage,
+    hotels,
+    entries: input.surface === 'logbook' ? selectedRows as MultiHotelLogEntry[] : [],
+    assigned: input.surface === 'assigned-by-me' ? selectedRows as MultiHotelAssignedItem[] : [],
+    items: input.surface === 'knows' ? selectedRows as MultiHotelKnowsItem[] : [],
   };
 }
 

@@ -6,6 +6,7 @@ import { describe, test } from 'node:test';
 import {
   buildMultiHotelRowsPayload,
   isSharedPropertyMemory,
+  MAX_MULTI_HOTEL_RESPONSE_BYTES,
   MAX_MULTI_HOTEL_RESPONSE_ROWS,
   multiHotelReplyReadLimit,
 } from '@/lib/staxis/multi-hotel';
@@ -304,6 +305,50 @@ describe('multi-hotel Staxis access contract', () => {
     assert.match(read, /readLogbookForHotel\(hotel, perHotelLimit, perHotelReplyLimit\)/);
   });
 
+  test('500-hotel payload budget includes labels, unavailable coverage, and rows', () => {
+    const hotels = Array.from({ length: 500 }, (_, index) => hotel(
+      `${String(index + 1).padStart(8, '0')}-1111-4111-8111-111111111111`,
+      `Hotel ${index + 1}`,
+    ));
+    const unavailable = hotels.slice(0, 250).map((entry) => ({
+      propertyId: entry.propertyId,
+      hotelName: entry.hotelName,
+      reason: 'read_failed' as const,
+    }));
+    const scope = {
+      accountId: ACCOUNT,
+      organizationId: null,
+      hotels,
+      authorizedPropertyIds: hotels.map((entry) => entry.propertyId),
+      authorityHash: 'a'.repeat(64),
+      authorityAll: false,
+      authorizationReceipt: null,
+    };
+    const entries = hotels.slice(250).map((entry, index) => ({
+      ...logEntry(entry.propertyId, `large-${index}`, '2026-08-08T10:00:00Z'),
+      hotelName: entry.hotelName,
+      body: 'x'.repeat(15_000),
+    }));
+    const payload = buildMultiHotelRowsPayload({
+      scope,
+      attemptedHotels: hotels,
+      unavailable,
+      surface: 'logbook',
+      entries,
+    });
+    const clientPayload = {
+      surface: 'logbook' as const,
+      hotels: payload.hotels,
+      coverage: payload.coverage,
+      entries: payload.entries,
+      ready: payload.coverage.complete,
+    };
+    const actualBytes = Buffer.byteLength(JSON.stringify(clientPayload), 'utf8');
+    assert.ok(actualBytes <= MAX_MULTI_HOTEL_RESPONSE_BYTES);
+    assert.equal(payload.coverage.responseBytesEstimated, actualBytes);
+    assert.equal(payload.coverage.unavailableHotelCount, 250);
+  });
+
   test('property memory excludes both current-user and other-user subjects', () => {
     assert.equal(isSharedPropertyMemory({ scope: 'property', subject_account_id: null, is_active: true }), true);
     assert.equal(isSharedPropertyMemory({ scope: 'property', subject_account_id: ACCOUNT, is_active: true }), false);
@@ -382,6 +427,11 @@ describe('multi-hotel Staxis access contract', () => {
     assert.match(panel, /payload && surface === 'logbook'/);
     assert.match(panel, /hotels\.length > 1/);
     assert.match(panel, /aria-pressed/);
+    assert.match(panel, /aria-expanded=\{repliesOpen\}/);
+    assert.match(panel, /aria-controls=\{repliesId\}/);
+    assert.match(panel, /id=\{repliesId\}/);
+    assert.match(panel, /mho-call/);
+    assert.match(panel, /item\.telText/);
     assert.match(panel, /Showing the first 500 replies/);
     assert.doesNotMatch(panel, /onOpenLogbook|Open \{entry\.hotelName\}/);
     assert.match(list, /propertyId=\{propertyId\}/);

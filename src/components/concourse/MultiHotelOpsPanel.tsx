@@ -26,7 +26,7 @@ const PANEL_CSS = `
 .mho-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-top:14px;}
 .mho-tab,.mho-filter{min-height:44px;border:1px solid rgba(62,92,72,.22);border-radius:10px;background:#fff;color:#3E5C48;padding:0 12px;font:600 12px/1.2 var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer;}
 .mho-tab[aria-pressed=true]{background:#3E5C48;color:#fff;border-color:#3E5C48;}
-.mho-tab:focus-visible,.mho-filter:focus-visible,.mho-open:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.mho-tab:focus-visible,.mho-filter:focus-visible,.mho-open:focus-visible,.mho-call:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
 .mho-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px;}
 .mho-filter{min-width:170px;text-align:left;font-weight:500;}
 .mho-status{margin-top:12px;font-size:12.5px;line-height:1.55;color:#5C625C;}
@@ -40,6 +40,8 @@ const PANEL_CSS = `
 .mho-time{font-size:11px;color:#8A9187;white-space:nowrap;}
 .mho-row-title{font-size:13px;line-height:1.45;font-weight:600;margin-top:4px;}
 .mho-row-body{font-size:12.5px;line-height:1.5;color:#5C625C;margin-top:3px;white-space:pre-wrap;}
+.mho-call{display:inline-flex;align-items:center;min-height:44px;color:#3E5C48;font-weight:600;text-decoration:none;}
+.mho-call:hover{text-decoration:underline;}
 .mho-open{margin-top:8px;min-height:44px;border:0;border-radius:9px;background:transparent;color:#3E5C48;padding:0 8px;font:600 12px/1.2 var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer;}
 .mho-empty{margin-top:12px;font-size:12.5px;color:#727A72;}
 @media (prefers-reduced-motion:reduce){.mho-tab,.mho-filter,.mho-open{transition:none;}}
@@ -228,24 +230,37 @@ function LogbookRows({
   if (entries.length === 0) return <div className="mho-empty" role="status">{complete ? 'No log book entries in the selected hotels.' : 'No complete log book result is available for the selected scope.'}</div>;
   return (
     <ul className="mho-list">
-      {entries.map((entry) => (
-        <li className="mho-row" key={`${entry.propertyId}:${entry.id}`}>
-          <div className="mho-row-top"><span className="mho-hotel">{entry.hotelName}</span><span className="mho-time">{formatMultiHotelDate(entry.createdAt, entry.timezone)}</span></div>
-          <button type="button" className="mho-open" style={{ display: 'block', paddingLeft: 0, marginTop: 4 }} onClick={() => onSelect(selectedEntry?.id === entry.id && selectedEntry.propertyId === entry.propertyId ? null : entry)}>{entry.title}</button>
-          {entry.body && <div className="mho-row-body">{entry.body}</div>}
-          {selectedEntry?.id === entry.id && selectedEntry.propertyId === entry.propertyId && (
-            <div className="mho-row-body" role="region" aria-label={`Replies for ${entry.title}`}>
-              {repliesLoading ? 'Loading replies…' : repliesError ? (repliesErrorMessage ?? 'Replies could not be read.') : replies.length === 0 ? 'No replies yet.' : replies.map((reply) => (
-                <div key={reply.id} style={{ marginTop: 6 }}><strong>{reply.authorName ?? 'Staff'}:</strong> {reply.body}</div>
-              ))}
-              {!repliesLoading && !repliesError && !repliesComplete && (
-                <div style={{ marginTop: 6 }}>Showing the first 500 replies.</div>
-              )}
-              <button type="button" className="mho-open" onClick={() => onSelect(null)}>Close detail</button>
-            </div>
-          )}
-        </li>
-      ))}
+      {entries.map((entry) => {
+        const repliesOpen = selectedEntry?.id === entry.id && selectedEntry.propertyId === entry.propertyId;
+        const repliesId = `mho-replies-${entry.propertyId}-${entry.id}`;
+        return (
+          <li className="mho-row" key={`${entry.propertyId}:${entry.id}`}>
+            <div className="mho-row-top"><span className="mho-hotel">{entry.hotelName}</span><span className="mho-time">{formatMultiHotelDate(entry.createdAt, entry.timezone)}</span></div>
+            <button
+              type="button"
+              className="mho-open"
+              style={{ display: 'block', paddingLeft: 0, marginTop: 4 }}
+              aria-expanded={repliesOpen}
+              aria-controls={repliesId}
+              onClick={() => onSelect(repliesOpen ? null : entry)}
+            >
+              {entry.title}
+            </button>
+            {entry.body && <div className="mho-row-body">{entry.body}</div>}
+            {repliesOpen && (
+              <div id={repliesId} className="mho-row-body" role="region" aria-label={`Replies for ${entry.title}`}>
+                {repliesLoading ? 'Loading replies…' : repliesError ? (repliesErrorMessage ?? 'Replies could not be read.') : replies.length === 0 ? 'No replies yet.' : replies.map((reply) => (
+                  <div key={reply.id} style={{ marginTop: 6 }}><strong>{reply.authorName ?? 'Staff'}:</strong> {reply.body}</div>
+                ))}
+                {!repliesLoading && !repliesError && !repliesComplete && (
+                  <div style={{ marginTop: 6 }}>Showing the first 500 replies.</div>
+                )}
+                <button type="button" className="mho-open" onClick={() => onSelect(null)}>Close detail</button>
+              </div>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -272,9 +287,25 @@ function KnowsRows({ items, complete }: { items: MultiHotelKnowsItem[]; complete
       {items.map((item) => (
         <li className="mho-row" key={`${item.propertyId}:${item.kind}:${item.id}`}>
           <div className="mho-row-top"><span className="mho-hotel">{item.hotelName}</span><span className="mho-time">{item.group === 'noticed' ? 'Noticed' : 'Taught'}</span></div>
-          <div className="mho-row-body">{item.sentence}</div>
+          <KnowledgeSentence item={item} />
         </li>
       ))}
     </ul>
+  );
+}
+
+function KnowledgeSentence({ item }: { item: MultiHotelKnowsItem }) {
+  const shownPhone = item.telText ?? item.tel?.replace(/^tel:/, '') ?? '';
+  const phoneAt = item.tel && shownPhone ? item.sentence.indexOf(shownPhone) : -1;
+  if (!item.tel || !shownPhone) return <div className="mho-row-body">{item.sentence}</div>;
+  if (phoneAt < 0) {
+    return <div className="mho-row-body">{item.sentence} <a className="mho-call" href={item.tel}>{shownPhone}</a></div>;
+  }
+  return (
+    <div className="mho-row-body">
+      {item.sentence.slice(0, phoneAt)}
+      <a className="mho-call" href={item.tel}>{shownPhone}</a>
+      {item.sentence.slice(phoneAt + shownPhone.length)}
+    </div>
   );
 }
