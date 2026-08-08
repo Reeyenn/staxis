@@ -23,7 +23,6 @@ These 19 schedules run automatically as part of Vercel deploys. Auth via `CRON_S
 | `/api/cron/agent-summarize-long-conversations` | `*/30 * * * *` | Every 30 min. Fold conversations with >50 unsummarized messages into a summary turn (Haiku-driven). |
 | `/api/cron/agent-consolidate-memory` | `0 5 * * *` | Consolidate durable hotel memory overnight. |
 | `/api/cron/agent-heal-counters` | `0 4 * * *` | Daily 04:00 UTC. Reconcile agent_conversations counter drift via `staxis_heal_conversation_counters`. |
-| `/api/cron/walkthrough-heal-stale` | `*/30 * * * *` | Every 30 min. Recover stranded walkthrough_runs via `staxis_walkthrough_heal_stale`. |
 | `/api/cron/sweep-orphan-auth-users` | `0 7 * * *` | Remove incomplete sign-up auth users without an account row. |
 | `/api/cron/sweep-mfa-verified-sessions` | `0 */6 * * *` | Remove expired trusted-device verification sessions. |
 | `/api/cron/pms-auth-codes-purge` | `45 4 * * *` | Retention for the whole PMS report intake: old login codes, old inbox emails, and raw report files — including deleting immediately any report quarantined for containing a card number. |
@@ -168,7 +167,9 @@ job-catalog parity test fails loudly on a half-finished change.
 
 - Vercel-scheduled: see the **Cron Jobs** tab of the Vercel project dashboard. Each invocation logs in **Functions**.
 - Externally triggered: `gh workflow list` shows the GitHub Actions side; per-route invocation logs land in Vercel **Functions** logs (filter by route).
-- Routes with a cataloged heartbeat write `cron_heartbeats` on success — `select route, last_run_at from cron_heartbeats order by last_run_at desc` is the fastest "is this thing running?" check.
+- Routes with a cataloged heartbeat write `cron_heartbeats` on success. The columns are `cron_name` and `last_success_at` (migration 0074), so the query is `select cron_name, last_success_at from cron_heartbeats order by last_success_at desc`. This line named `route` and `last_run_at` for months; neither column has ever existed, so anybody who pasted it got a syntax error at the moment they were trying to find out whether a job had stopped.
+- The same answer without SQL: `GET /api/admin/mission/workers` with the admin session or the cron bearer, which is what Mission Control's jobs list reads.
+- **A heartbeat means the route finished, not that it had anything to do.** A job whose input table stopped being written stays green forever. Producer/consumer links live in `src/lib/automation/job-catalog.ts` as `fedBy`.
 
 ## Audit reference
 

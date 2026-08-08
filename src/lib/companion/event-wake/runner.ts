@@ -57,6 +57,7 @@ import {
   INTERESTING_EVENT_TYPES,
   MAX_EVENTS_PER_WAKE,
   decideWake,
+  disabledEventCategories,
   keepEnabledSections,
   wakeTopicFor,
   wakeWindow,
@@ -215,7 +216,14 @@ export async function sweepProperty(
   // ── 5. did anything happen ──
   let rows: WakeEventRow[];
   try {
-    rows = await readWindowEvents(propertyId, window.sinceIso, window.untilIso);
+    rows = await readWindowEvents(
+      propertyId,
+      window.sinceIso,
+      window.untilIso,
+      // The hotel's switched-off departments, applied by the QUERY so the row
+      // limit is not spent on rows the next line is going to drop anyway.
+      disabledEventCategories(sectionFlags),
+    );
   } catch (e) {
     // COULD NOT LOOK. The cursor deliberately stays where it is: claiming a
     // window whose events never came back would discard them silently, and a
@@ -372,25 +380,44 @@ async function preserve(input: {
  * and buy a model call about its own last model call. `keepInterestingEvents`
  * applies the same rule again in memory, because a loop that spends money is
  * not a place for one control.
+ *
+ * ─── WHY IT READS NEWEST FIRST AND HANDS BACK OLDEST FIRST ─────────────────
+ *
+ * The LIMIT has to fall on the rows that matter least, and for a feature whose
+ * whole claim is "this just happened" that is the OLDEST ones. Read ascending,
+ * a burst of more than MAX_EVENTS_PER_WAKE failures threw away the newest rows
+ * and prepared a note about the beginning of the burst. So the read is
+ * descending and the answer is reversed: the gate, the prompt and the topic all
+ * still see one window in the order it happened.
+ *
+ * `excludeCategories` is the hotel's own switched-off departments. See
+ * `disabledEventCategories`: applied here so the limit is not spent on rows
+ * `keepEnabledSections` was always going to drop. Expressed as a chain of
+ * `neq` rather than a `not.in` list because every filter in this file has to
+ * mean the same thing to PostgREST and to the test harness's shim.
  */
 async function readWindowEvents(
   propertyId: string,
   sinceIso: string,
   untilIso: string,
+  excludeCategories: readonly string[] = [],
 ): Promise<WakeEventRow[]> {
-  const { data, error } = await supabaseAdmin
+  let query = supabaseAdmin
     .from('activity_log')
     .select('occurred_at, event_category, event_type, source, description, target_type, target_label, metadata')
     .eq('property_id', propertyId)
     .gt('occurred_at', sinceIso)
     .lte('occurred_at', untilIso)
     .neq('source', AGENT_JOURNAL_SOURCE)
-    .in('event_type', [...INTERESTING_EVENT_TYPES])
-    .order('occurred_at', { ascending: true })
+    .in('event_type', [...INTERESTING_EVENT_TYPES]);
+  for (const category of excludeCategories) query = query.neq('event_category', category);
+
+  const { data, error } = await query
+    .order('occurred_at', { ascending: false })
     .limit(MAX_EVENTS_PER_WAKE);
   if (error) throw new Error(`activity window read failed: ${error.message}`);
 
-  return ((data ?? []) as Array<Record<string, unknown>>).map((row) => ({
+  return ((data ?? []) as Array<Record<string, unknown>>).reverse().map((row) => ({
     occurredAt: typeof row.occurred_at === 'string' ? row.occurred_at : '',
     eventCategory: typeof row.event_category === 'string' ? row.event_category : '',
     eventType: typeof row.event_type === 'string' ? row.event_type : '',

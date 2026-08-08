@@ -118,14 +118,13 @@ export function routingAmountCents(price: PriceRange | null | undefined): number
 
 /**
  * Strong-to-weak, matching APPROVER_STRENGTH in authority.ts. A stronger job
- * may sign for a weaker one — an owner can approve what a VP was named for,
- * because a rulebook that made the owner ask the VP for permission would be
- * describing a company that does not exist.
+ * may sign for a weaker one — an owner can approve what a regional manager was
+ * named for, because a rulebook that made the owner ask the regional manager
+ * for permission would be describing a company that does not exist.
  */
 const APPROVER_STRENGTH: Record<AuthorityApproverRole, number> = {
-  owner: 3,
-  vp: 2,
-  finance: 1,
+  owner: 2,
+  regional_manager: 1,
   general_manager: 0,
 };
 
@@ -133,8 +132,7 @@ const APPROVER_STRENGTH: Record<AuthorityApproverRole, number> = {
 function approverRoleOfHat(hat: MembershipHat): AuthorityApproverRole | null {
   switch (hat.role) {
     case 'owner': return 'owner';
-    case 'vp': return 'vp';
-    case 'finance': return 'finance';
+    case 'regional_manager': return 'regional_manager';
     case 'general_manager': return 'general_manager';
     default: return null;
   }

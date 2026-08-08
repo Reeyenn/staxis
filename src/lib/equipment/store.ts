@@ -7,6 +7,7 @@
 // Mirrors src/lib/compliance/store.ts.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import type {
   Equipment,
   EquipmentInput,
@@ -133,7 +134,12 @@ export async function getEquipmentDetail(pid: string, id: string): Promise<Equip
       title: String(w.description ?? ''),
       detail: str(w.room_number),
       cost: num(w.repair_cost),
-      status: w.status === 'resolved' ? 'done' : 'open',
+      // A ticket is OFF the board on 'resolved' OR on 'closed' — the second
+      // being "somebody looked and it was not actually a problem". Asked here
+      // as `w.status === 'resolved'`, this sheet listed every non issue against
+      // the asset as work still outstanding, forever, on the one screen a
+      // manager opens to decide whether a machine is worth keeping.
+      status: workOrderIsSettled(w.status) ? 'done' : 'open',
       priority: null,
     })),
     ...preventive.map((p): EquipmentHistoryItem => ({

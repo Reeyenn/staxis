@@ -24,7 +24,7 @@ import {
   StorageImage, PageHead, BoardColumn, MtEmptyCard,
   useBoardGate, BoardLoading, BoardLoadError,
   displayLoc, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
-  prioColor, prioLabel,
+  prioColor, prioLabel, workOrderEnding, workOrderHistoryCount, writeFailureMessage,
   CX_SPRING, CX_CARD_SHADOW, CX_CARD_SHADOW_HOVER, CX_CARD_BORDER_HOVER,
 } from './_mt-snow';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
@@ -58,6 +58,15 @@ function displayRole(stored: string | undefined, es: boolean): string {
   if (stored === 'Staff' || stored === 'Personal') return roleLabel(undefined, es);
   return stored;
 }
+
+// Every write on this board goes through the browser client, and the policy
+// behind work_orders checks that this person may mutate this hotel (0396). A
+// refusal is 42501, not a dropped connection — and this board told everybody it
+// was one, so somebody whose access had been narrowed was sent to check their
+// wifi, repeatedly. The Preventive board has said the right thing for a while;
+// the rule is shared now so only one of them can be wrong.
+const ticketWriteFailure = (e: unknown, fallback: string) =>
+  writeFailureMessage(e, fallback, 'work orders');
 
 // Professional lane tone — Concourse "muted" slate (the outside-contractor
 // lane is neutral, not a severity), replacing the old off-palette purple.
@@ -163,6 +172,23 @@ function OpenCard({
         {w.description}
       </span>
       {showPro && <div><ProPill w={w} es={es} /></div>}
+      {/* Who is holding it. "Give it to someone else" on the Staxis list writes
+          this, and that list shows work orders only to management and the front
+          desk — so for a maintenance tech this board is the ONLY place a
+          hand-off to them is visible at all. A ticket assigned and shown
+          nowhere is not late, it is invisible. */}
+      {w.assignedName && (
+        <div>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px',
+            borderRadius: 999, height: 22, background: 'rgba(53,107,76,0.10)', color: '#356B4C',
+            fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.06em',
+            textTransform: 'uppercase', whiteSpace: 'nowrap', maxWidth: '100%', overflow: 'hidden',
+          }}>
+            {'With'} {w.assignedName}
+          </span>
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 1 }}>
         <Avatar name={w.submittedByName || '?'} size={20} />
         <span style={{ fontFamily: FONT_SANS, fontSize: 11.5, color: T.ink2, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -404,9 +430,71 @@ function ContractorPanel({
   );
 }
 
+// ── cost + asset panel (editable while the order is still open) ─────────────
+//
+// The submit form asks for these at the moment the thing breaks, which is the
+// one moment nobody knows what the repair will cost. Without an editor here the
+// figure could never be recorded, and the asset sheet's "Total repair spend"
+// tile — which sums work_orders.repair_cost per asset — stayed at $0 forever.
+function CostAssetPanel({
+  w, pid, onSave, es,
+}: {
+  w: WorkOrder;
+  pid: string;
+  onSave: (args: { equipmentId: string | null; repairCost: number | null }) => Promise<void>;
+  es: boolean;
+}) {
+  const { lang } = useLang();
+  const [equipmentId, setEquipmentId] = useState<string | null>(w.equipmentId ?? null);
+  const [cost, setCost] = useState(w.repairCost != null ? String(w.repairCost) : '');
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Re-sync when switching to a different order while the modal is mounted.
+  useEffect(() => {
+    setEquipmentId(w.equipmentId ?? null);
+    setCost(w.repairCost != null ? String(w.repairCost) : '');
+    setSavedAt(null);
+  }, [w.id, w.equipmentId, w.repairCost]);
+
+  const typed = cost.trim();
+  const parsed = typed === '' ? null : Number(typed);
+  const costValue = parsed != null && Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  const costInvalid = typed !== '' && costValue === null;
+  const dirty = equipmentId !== (w.equipmentId ?? null) || costValue !== (w.repairCost ?? null);
+
+  const save = async () => {
+    setBusy(true);
+    try { await onSave({ equipmentId, repairCost: costValue }); setSavedAt(Date.now()); }
+    catch { /* save failed — the board surfaced a toast; keep the fields editable */ }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Caps size={10} weight={600}>{'Cost and asset'}</Caps>
+      <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2 }}>
+        {"Fill these in once you know them. The cost lands on the asset's service history."}
+      </span>
+      <Field label={'Equipment'} hint={'The asset this is about'}>
+        <EquipmentPicker pid={pid} value={equipmentId} onChange={setEquipmentId} lang={lang} />
+      </Field>
+      <Field label={'Repair cost ($)'} hint={costInvalid ? 'Enter a number, or leave it empty.' : 'Parts, labor, contractor invoice.'}>
+        <TextInput value={cost} onChange={setCost} type="number" min={0} step="0.01" placeholder="—" />
+      </Field>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10 }}>
+        {savedAt && !dirty && <Caps size={10} c={T.sageDeep}>{'Saved'}</Caps>}
+        <Btn variant="sage" size="sm" disabled={busy || !dirty || costInvalid} onClick={save}>
+          {busy ? ('Saving…') : ('Save cost and asset')}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
 // ── detail modal ────────────────────────────────────────────────────────────
 function DetailModal({
-  w, open, onClose, onDone, onSetPlacement, onAttachPhoto, onSaveContractor,
+  w, open, onClose, onDone, onSetPlacement, onAttachPhoto, onSaveContractor, onSaveCostAsset,
 }: {
   w: WorkOrder | null;
   open: boolean;
@@ -415,6 +503,7 @@ function DetailModal({
   onSetPlacement: (w: WorkOrder, v: Placement) => void;
   onAttachPhoto: (id: string, file: File) => Promise<void>;
   onSaveContractor: (id: string, args: { trade: string; company: string; phone: string }) => Promise<void>;
+  onSaveCostAsset: (id: string, args: { equipmentId: string | null; repairCost: number | null }) => Promise<void>;
 }) {
   const { lang } = useLang();
   const { activePropertyId } = useProperty();
@@ -457,6 +546,19 @@ function DetailModal({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <Caps size={11} tracking="0.06em">{'Open · submitted'} {fmtSubmittedAt(w.createdAt)}</Caps>
 
+        {/* Said again here, in words, because the card's badge is easy to miss
+            and this modal is where somebody decides whether to pick the job up.
+            Unassigned says so out loud rather than staying silent: "nobody has
+            this" is the answer people actually need. */}
+        <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px' }}>
+          <Caps size={10} tracking="0.06em" c={T.ink3}>{'Who has this'}</Caps>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink, margin: '5px 0 0', fontWeight: 500 }}>
+            {w.assignedName
+              ? `${w.assignedName} is on it.`
+              : 'Nobody yet. It is on the board for whoever picks it up.'}
+          </p>
+        </div>
+
         {/* On the THING, not the tab: this modal is one room's broken thing, so
             the signpost belongs here and nowhere on the board behind it. */}
         <PatternChip propertyId={activePropertyId} kind="room" value={roomNumber} lang={lang} />
@@ -480,6 +582,10 @@ function DetailModal({
           <ContractorPanel w={w} es={es} onSave={(args) => onSaveContractor(w.id, args)} />
         )}
 
+        {activePropertyId && (
+          <CostAssetPanel w={w} pid={activePropertyId} es={es} onSave={(args) => onSaveCostAsset(w.id, args)} />
+        )}
+
         <div style={{ background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 12 }}>
           <Avatar name={w.submittedByName || '?'} size={28} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -501,13 +607,23 @@ function DetailModal({
 }
 
 // ── history popup ────────────────────────────────────────────────────────────
+//
+// This is the hotel's record of the maintenance it carried out, and until now it
+// had one sentence for two endings. A ticket somebody looked at and judged not
+// to be a fault ("Not actually a problem" on the Staxis list) arrived here with
+// a green "Done", counted under "N resolved", and the name of whoever dismissed
+// it printed under "Fixed by" — a repair this hotel never performed, written
+// into the only place anybody would go to check what it did. The words come
+// from workOrderEnding / workOrderHistoryCount so they can be asserted without
+// rendering anything.
 function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () => void; done: WorkOrder[]; es: boolean }) {
-  const cols = '120px 1fr 130px 96px 78px';
+  const cols = '120px 1fr 130px 96px 96px';
+  const repairs = done.filter((w) => workOrderEnding(w.settledAs).countsAsRepair).length;
   return (
     <Modal
       open={open} onClose={onClose}
       title={'Work order history'}
-      subtitle={`${done.length} resolved · everything closed out`}
+      subtitle={workOrderHistoryCount(repairs, done.length - repairs)}
       width={820}
       footer={<Btn variant="ghost" onClick={onClose}>{'Close'}</Btn>}
     >
@@ -520,11 +636,13 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
           <div style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '0 0 12px', borderBottom: `1px solid ${T.rule}` }}>
             <Caps size={9}>{'Where'}</Caps>
             <Caps size={9}>{'What & note'}</Caps>
-            <Caps size={9}>{'Fixed by'}</Caps>
-            <Caps size={9}>{'Completed'}</Caps>
-            <Caps size={9}>{'Status'}</Caps>
+            <Caps size={9}>{'Who'}</Caps>
+            <Caps size={9}>{'Settled'}</Caps>
+            <Caps size={9}>{'Outcome'}</Caps>
           </div>
-          {done.slice().sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).map((w) => (
+          {done.slice().sort((a, b) => (b.completedAt?.getTime() ?? 0) - (a.completedAt?.getTime() ?? 0)).map((w) => {
+            const ending = workOrderEnding(w.settledAs);
+            return (
             <div key={w.id} style={{ display: 'grid', gridTemplateColumns: cols, gap: 14, padding: '14px 0', borderBottom: `1px solid ${T.ruleSoft}`, alignItems: 'center' }}>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.2, fontWeight: 600 }}>{displayLoc(w.location)}</span>
@@ -534,11 +652,17 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
                 <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.description}</span>
                 {w.completionNote && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, fontStyle: 'italic' }}>“{w.completionNote}”</span>}
               </div>
-              <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{w.completedByName || '—'}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+                <Caps size={9} c={T.ink3}>{ending.byLabel}</Caps>
+                <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{w.completedByName || '—'}</span>
+              </div>
               <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>{w.completedAt ? fmtDateShort(w.completedAt) : '—'}</span>
-              <Pill tone="sage">✓ {'Done'}</Pill>
+              <Pill tone={ending.tone}>
+                {ending.countsAsRepair ? `✓ ${ending.label}` : ending.label}
+              </Pill>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </Modal>
@@ -652,7 +776,7 @@ export function WorkOrdersTab() {
         needsPro: isPro,
       });
     } catch (err) {
-      flash("Couldn't submit the work order. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't submit the work order. Check your connection and try again."));
       throw err;
     }
     // Trigger the "arrive & glow" once the new card mounts from the subscription.
@@ -670,7 +794,7 @@ export function WorkOrdersTab() {
         completionNote: note || undefined,
       });
     } catch (err) {
-      flash("Couldn't mark it done. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't mark it done. Check your connection and try again."));
       throw err;
     }
     setDetailId(null);
@@ -696,10 +820,10 @@ export function WorkOrdersTab() {
     const patch = val === 'professional'
       ? { needsPro: true }
       : { priority: val, needsPro: false, proTrade: null, proCompany: null, proPhone: null, proCalledAt: null };
-    updateWorkOrder(user.uid, activePropertyId, w.id, patch).catch(() => {
+    updateWorkOrder(user.uid, activePropertyId, w.id, patch).catch((err) => {
       // Fire-and-forget no more: the card won't move (realtime never fires on
       // a failed write), so tell the user why.
-      flash("Couldn't move the work order. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't move the work order. Check your connection and try again."));
     });
   };
 
@@ -712,8 +836,8 @@ export function WorkOrdersTab() {
     }
     try {
       await updateWorkOrder(user.uid, activePropertyId, id, { submitterPhotoPath: path });
-    } catch {
-      flash("Couldn't attach the photo. Try again.");
+    } catch (err) {
+      flash(ticketWriteFailure(err, "Couldn't attach the photo. Try again."));
     }
   };
 
@@ -728,7 +852,23 @@ export function WorkOrdersTab() {
         proCalledAt: new Date(),
       });
     } catch (err) {
-      flash("Couldn't save the contractor. Check your connection and try again.");
+      flash(ticketWriteFailure(err, "Couldn't save the contractor. Check your connection and try again."));
+      throw err;
+    }
+  };
+
+  // Repair cost + the asset link, recorded from the detail modal at close-out.
+  // Both were previously write-once on the submit form, which is why the asset
+  // sheet's repair-spend total could never be filled in.
+  const saveCostAsset = async (id: string, args: { equipmentId: string | null; repairCost: number | null }) => {
+    if (!user || !activePropertyId) return;
+    try {
+      await updateWorkOrder(user.uid, activePropertyId, id, {
+        equipmentId: args.equipmentId,
+        repairCost: args.repairCost,
+      });
+    } catch (err) {
+      flash(ticketWriteFailure(err, "Couldn't save the cost. Check your connection and try again."));
       throw err;
     }
   };
@@ -808,6 +948,7 @@ export function WorkOrdersTab() {
         onSetPlacement={setPlacement}
         onAttachPhoto={attachPhoto}
         onSaveContractor={saveContractor}
+        onSaveCostAsset={saveCostAsset}
       />
       <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} done={doneList} es={es} />
 

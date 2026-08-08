@@ -39,7 +39,6 @@ describe('middleware — public allowlist', () => {
     '/onboard/property',
     '/join',
     '/invite/abc123',
-    '/company-invite/abc123',
     '/privacy',
     '/terms',
     '/consent',
@@ -137,8 +136,8 @@ describe('middleware — redirect preserves query string', () => {
 });
 
 describe('middleware — capability URL privacy', () => {
-  test('company invite pages suppress Referer and caching', () => {
-    const res = middleware(reqFor(`/company-invite/${'a'.repeat(64)}`));
+  test('invite pages suppress Referer and caching', () => {
+    const res = middleware(reqFor(`/invite/${'a'.repeat(48)}`));
     assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
     assert.match(res.headers.get('cache-control') ?? '', /no-store/);
   });

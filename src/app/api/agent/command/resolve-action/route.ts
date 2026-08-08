@@ -28,6 +28,7 @@ import {
   ASK_STAXIS_EXECUTION_BUDGET_MS,
   ASK_STAXIS_FALLBACK_RESERVE_MS,
   agentFeatureKeyForOrigin,
+  agentPlanFailureMessage,
   resolveAgentOriginExecutionPlan,
   streamAgent,
   type AgentMessage,
@@ -323,7 +324,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   } catch (error) {
     return Response.json({
       ok: false,
-      error: error instanceof Error ? error.message : 'Ask Staxis is unavailable',
+      error: agentPlanFailureMessage(error),
       requestId,
     }, { status: 503 });
   }

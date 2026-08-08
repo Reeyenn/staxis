@@ -36,6 +36,7 @@ import type { CapabilityDecision } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { isAssignableRole, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
+import { revokeAllDeviceTrustForAccount } from '@/lib/auth-revoke-device-trust';
 import { validateUuid } from '@/lib/api-validate';
 import {
   loadHatsForAccounts,
@@ -1147,6 +1148,34 @@ export async function PUT(req: NextRequest) {
       log.error('[team:PUT] password update failed', { requestId, msg: errToString(pwErr) });
       return err(pwErr.message || 'Failed to update password', {
         requestId, status: 500, code: ApiErrorCode.InternalError,
+      });
+    }
+    // A manager resets a password to take someone OUT of the hotel: a phone
+    // was lost, or a person was let go. The new password alone does not do
+    // that. The `staxis_device` cookie on the old browser is good for 400
+    // rolling days against a `trusted_devices` row good for ten years, and the
+    // per-session `mfa_verified_sessions` row keeps that browser's RLS reads
+    // open. `/api/auth/revoke-trust` already destroys both when the person
+    // resets their OWN password (F-02 in the original auth plan); the
+    // manager-driven reset never did. Same act, same consequence now.
+    //
+    // Best-effort by construction: the password is already rotated, so a
+    // failure here must not report the reset as having failed. It is logged
+    // and recorded as a security event instead.
+    //
+    // Scoped to !isSelf on purpose. Changing your OWN password already has a
+    // complete flow at /signin/reset: it revokes trust AND signs you out, in
+    // that order, so you land on the sign-in page knowing why. Revoking here
+    // without the sign-out would drop the person into a session whose second
+    // factor was just deleted underneath them, which is worse than either
+    // whole behaviour.
+    if (!isSelf) {
+      await revokeAllDeviceTrustForAccount({
+        accountId,
+        authUserId: target.data_user_id,
+        reason: 'manager_password_reset',
+        actorUserId: caller.authUserId,
+        requestId,
       });
     }
   }

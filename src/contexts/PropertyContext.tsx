@@ -24,12 +24,36 @@ import {
   sameAuthorizationValue,
 } from '@/lib/property-coverage';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
+import { useOptionalPortfolio } from '@/contexts/PortfolioContext';
+import {
+  isLegacyPortfolioWorldPath,
+  resolveCompanyAppScope,
+  UNRESOLVED_LOADING,
+  UNRESOLVED_NO_SELECTION,
+  UNRESOLVED_UNAVAILABLE,
+  type ActingScopeRequest,
+  type AppScope,
+  type AppScopeChangeResult,
+  type AppScopeSelection,
+} from '@/lib/portfolio-ui/acting-scope';
+import type { PortfolioUiCompanyContext } from '@/lib/portfolio-ui/contracts';
 
 export type CapabilityOverridesStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 interface PropertyContextType {
   properties: Property[];
   activeProperty: Property | null;
+  /**
+   * WHAT THE APP IS POINTED AT — one hotel, one company, or explicitly nothing.
+   *
+   * Read this instead of null-checking `activePropertyId`. A hotel id that is
+   * no longer in this viewer's coverage used to collapse to null, which every
+   * consumer read as "still loading"; it now surfaces as
+   * `unresolved / selection_unavailable`, and both gates refuse it.
+   */
+  activeScope: AppScope;
+  /** The company backing a company scope. Null at hotel scope. */
+  activeCompany: PortfolioUiCompanyContext | null;
   activePropertyId: string | null;
   /** Canonical signed-in account + resolved hotel identity for all scoped
    *  client snapshots. Consumers must not rebuild this key independently. */
@@ -54,6 +78,13 @@ interface PropertyContextType {
   capabilityOverridesError: string | null;
   loading: boolean;
   propertiesError: string | null;
+  /**
+   * THE ONE WAY TO REPOINT THE APP. Takes a scope value, so "the whole company"
+   * is expressible without a magic hotel id, and reports refusal instead of
+   * silently doing nothing.
+   */
+  setActiveScope: (selection: AppScopeSelection) => AppScopeChangeResult;
+  /** Hotel-only shorthand for the existing call sites. Prefer setActiveScope. */
   setActivePropertyId: (id: string) => void;
   retryProperties: () => void;
   refreshProperty: () => Promise<void>;
@@ -64,6 +95,8 @@ interface PropertyContextType {
 const PropertyContext = createContext<PropertyContextType>({
   properties: [],
   activeProperty: null,
+  activeScope: UNRESOLVED_LOADING,
+  activeCompany: null,
   activePropertyId: null,
   activePropertyViewerKey: null,
   staff: [],
@@ -77,6 +110,7 @@ const PropertyContext = createContext<PropertyContextType>({
   capabilityOverridesError: null,
   loading: true,
   propertiesError: null,
+  setActiveScope: () => ({ ok: false, reason: 'blocked' }),
   setActivePropertyId: () => {},
   retryProperties: () => {},
   refreshProperty: async () => {},
@@ -134,8 +168,23 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const pathname = usePathname();
   const acting = useOptionalHotelActingContext();
+  const portfolio = useOptionalPortfolio();
   const authFlowActive = pathname === '/signin' || pathname.startsWith('/signin/');
-  const portfolioScopeQuiescent = acting?.request.kind === 'portfolio_scope';
+  // COMPANY MODE vs THE OLD PORTFOLIO WORLD. Both arrive here as
+  // `portfolio_scope`, and they want opposite things from this provider.
+  //
+  // The standalone /portfolio and /company surfaces render entirely from the
+  // portfolio bootstrap and must stay quiescent: loading the hotel roster under
+  // them would issue a request nothing reads. Company MODE is the ordinary app
+  // wearing a company scope, and it needs the roster for both halves of the job
+  // (the switcher's hotel rows, and the section union across the company).
+  const actingScopeRequest: ActingScopeRequest = acting?.scope ?? { kind: 'local_hotel' };
+  const companyModeRequest = actingScopeRequest.kind === 'company'
+    && !isLegacyPortfolioWorldPath(pathname)
+    ? actingScopeRequest
+    : null;
+  const portfolioScopeQuiescent = acting?.request.kind === 'portfolio_scope'
+    && !companyModeRequest;
   const actingHotelId = acting?.request.kind === 'hotel'
     && acting.status === 'allowed'
     && acting.context
@@ -234,6 +283,34 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // Derived from the viewer-stamped list — never from a stale selected id.
   const activeProperty = exposedProperties.find(p => p.id === activePropertyId) ?? null;
   const resolvedPropertyId = activeProperty?.id ?? null;
+  // ── THE RESOLVED SCOPE ────────────────────────────────────────────────────
+  // A company scope is minted by the same pure algebra the portfolio receipts
+  // use, from the bootstrap's own company contexts. A company this viewer does
+  // not hold, or one with no hotels, resolves to `selection_unavailable`.
+  //
+  // The hotel branch is where the old silent collapse lived: a stored hotel id
+  // that is not in coverage produced `activeProperty === null`, indistinguishable
+  // from "nothing chosen yet". The three unresolved reasons keep them apart.
+  const companyContexts = portfolio?.data?.contexts ?? null;
+  const companyScope: AppScope | null = companyModeRequest
+    ? (portfolio?.loading
+        ? UNRESOLVED_LOADING
+        : resolveCompanyAppScope(companyModeRequest, companyContexts))
+    : null;
+  const activeCompany = companyScope?.kind === 'company'
+    ? (companyContexts ?? []).find(
+        (candidate) => candidate.organizationId.toLowerCase()
+          === companyScope.scope.organizationId,
+      ) ?? null
+    : null;
+  const activeScope: AppScope = companyScope
+    ?? (resolvedPropertyId
+      ? { kind: 'hotel', propertyId: resolvedPropertyId }
+      : exposedPropertiesLoading
+        ? UNRESOLVED_LOADING
+        : activePropertyId
+          ? UNRESOLVED_UNAVAILABLE
+          : UNRESOLVED_NO_SELECTION);
   const activePropertyViewerKey = userUid && userAccountId && resolvedPropertyId
     ? `${userUid}:${userAccountId}:${resolvedPropertyId}:${actingAuthorizationKey}`
     : null;
@@ -268,8 +345,20 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       && !activeProperty.onboardingPromptShownAt
     : false;
 
-  const setActivePropertyId = useCallback((id: string) => {
-    if (actingHotelId && id !== actingHotelId) return;
+  const setActiveScope = useCallback((selection: AppScopeSelection): AppScopeChangeResult => {
+    if (selection.kind === 'company') {
+      // Company scope lives in the location, not in this provider: that is what
+      // keeps a refresh in the same scope and stops a second source of truth
+      // from drifting against the URL. What this DOES own is the hotel-scoped
+      // snapshot, dropped in the same event as the change so no render can pair
+      // a company scope with the previous hotel's capability map.
+      setCapabilitySnapshot(null);
+      return { ok: true };
+    }
+    const id = selection.propertyId;
+    // A verified acting context pins the hotel. Anything else is refused
+    // outright rather than accepted and then quietly reverted.
+    if (actingHotelId && id !== actingHotelId) return { ok: false, reason: 'blocked' };
     // The selector also calls this for one-hotel auto-entry and when a user
     // explicitly chooses the hotel that is already active. That is not a
     // property transition: clearing the capability snapshot here would leave
@@ -278,19 +367,24 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     // terminal/loading snapshot so gated pages cannot hang until hard refresh.
     if (id === activePropertyId) {
       try { localStorage.setItem('hotelops-active-property', id); } catch { /* storage unavailable */ }
-      return;
+      return { ok: true };
     }
     if (activePropertyId && !propertyChangeAllowed({
       fromPropertyId: activePropertyId,
       toPropertyId: id,
       source: 'selector',
-    })) return;
+    })) return { ok: false, reason: 'blocked' };
     // Clear in the same event as the hotel change. No render may pair the new
     // hotel with the previous hotel's capability map.
     setCapabilitySnapshot(null);
     setActivePropertyIdState(id);
     try { localStorage.setItem('hotelops-active-property', id); } catch { /* storage unavailable */ }
+    return { ok: true };
   }, [activePropertyId, actingHotelId]);
+
+  const setActivePropertyId = useCallback((id: string) => {
+    setActiveScope({ kind: 'hotel', propertyId: id });
+  }, [setActiveScope]);
 
   // Cross-tab sync (audit/concurrency #13). Without this, swapping the
   // active property in Tab A leaves Tab B's dashboard/rooms/staff list
@@ -829,6 +923,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       value={{
         properties: exposedProperties,
         activeProperty,
+        activeScope,
+        activeCompany,
         activePropertyId: resolvedPropertyId,
         activePropertyViewerKey,
         staff: exposedStaff,
@@ -842,6 +938,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         capabilityOverridesError,
         loading: exposedPropertiesLoading,
         propertiesError: exposedPropertiesError,
+        setActiveScope,
         setActivePropertyId,
         retryProperties,
         refreshProperty,

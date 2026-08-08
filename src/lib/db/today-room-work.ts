@@ -112,10 +112,23 @@ export async function fetchTodayPropertyCounts(
     };
   }
   const row = ((data ?? []) as TodayPropertyCounts[])[0];
-  return row ?? {
-    checkouts: 0, stayovers: 0, vacant_clean: 0, vacant_dirty: 0,
-    ooo: 0, total_rooms: 0, total_checkouts_today: 0, in_house: 0,
-  };
+  if (!row) {
+    // today_property_counts_v1 fails closed: an authorized caller ALWAYS gets a
+    // row (its aggregates yield one even for a hotel with no data), so zero
+    // rows means the RPC did not recognize this caller's access — a missing or
+    // stale token, or a fail-closed standing lookup. Fabricating zeros here
+    // painted an authorization failure as "waiting for PMS data" forever, with
+    // no error surfaced and no retry offered. Callers that opted into
+    // throwOnError get the truth; the rest keep the old zeros fallback.
+    const denied = new Error('today_property_counts_v1 returned no row: caller not authorized for this property');
+    console.warn('fetchTodayPropertyCounts:', denied.message);
+    if (options.throwOnError) throw denied;
+    return {
+      checkouts: 0, stayovers: 0, vacant_clean: 0, vacant_dirty: 0,
+      ooo: 0, total_rooms: 0, total_checkouts_today: 0, in_house: 0,
+    };
+  }
+  return row;
 }
 
 // ─── Realtime ─────────────────────────────────────────────────────────────

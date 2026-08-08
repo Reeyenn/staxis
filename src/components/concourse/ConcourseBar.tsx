@@ -16,9 +16,20 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { useCan } from '@/lib/capabilities/useCan';
+import { useActiveScopeStanding, useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
+import {
+  companyScopeHref,
+  isLegacyPortfolioWorldPath,
+  localAppHref,
+} from '@/lib/portfolio-ui/acting-scope';
+import {
+  activeScopeSwitcherKey,
+  buildScopeSwitcherRows,
+  scopeSwitcherRowForKey,
+  type ScopeSwitcherRow,
+} from '@/lib/portfolio-ui/scope-switcher';
 import {
   ConcourseBarView,
   type AdminDestinationAction,
@@ -34,6 +45,8 @@ import { Download, Smartphone } from 'lucide-react';
 import { roleLabel } from '@/lib/roles';
 import { MobileConcourseNav } from './MobileConcourseNav';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
+import { useAdminAccountSwitcher } from '@/lib/hooks/use-admin-account-switcher';
+import { AccountSwitcherMenuSection } from './AccountSwitcherMenuSection';
 import { useOptionalPortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 import { mapPortfolioUiRoute } from '@/lib/portfolio-ui/context';
@@ -80,8 +93,16 @@ export function ConcourseBar() {
     platformAdmin,
     propertyStandings,
   } = useAuth();
-  const { properties, activeProperty, loading: propertyLoading, setActivePropertyId } = useProperty();
+  const {
+    properties,
+    activeProperty,
+    activeScope,
+    activeCompany,
+    loading: propertyLoading,
+    setActiveScope,
+  } = useProperty();
   const can = useCan();
+  const scopeStanding = useActiveScopeStanding();
   const { lang } = useLang();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -90,13 +111,23 @@ export function ConcourseBar() {
   const navigation = useReliableNavigation();
   const enabled = useEnabledSections();
   const { platform, installed } = useInstallStaxis();
+  // A company scope on an ordinary app path is company MODE, not the standalone
+  // portfolio world: the bar keeps its normal pills and, above all, keeps
+  // rendering the switcher, which is the whole point of the mode.
   const purePortfolioContext = pathname === '/portfolio'
     || pathname.startsWith('/portfolio/')
-    || acting?.request.kind === 'portfolio_scope';
+    || (acting?.request.kind === 'portfolio_scope' && isLegacyPortfolioWorldPath(pathname));
   const portfolioHotelContext = acting?.context?.source === 'portfolio'
     ? acting.context
     : null;
   const portfolioScoped = purePortfolioContext || Boolean(portfolioHotelContext);
+  const companyMode = activeScope.kind === 'company' && !portfolioScoped;
+  const companyOrganizationId = activeScope.kind === 'company'
+    ? activeScope.scope.organizationId
+    : null;
+  const companyDisplayName = activeScope.kind === 'company'
+    ? activeCompany?.organizationName ?? activeScope.scope.name
+    : null;
   const selectedCompany = portfolio?.data?.selectedCompany ?? null;
   const portfolioOrganizationId = selectedCompany?.organizationId
     ?? portfolioHotelContext?.organization?.id
@@ -115,17 +146,21 @@ export function ConcourseBar() {
     && !!user
     && properties.length === 0
     && user.role !== 'admin';
+  // The old company picker is gone from the default path: with nothing selected
+  // the logo goes Home, where the switcher offers every company and hotel.
   const portfolioHomeHref = portfolioOrganizationId
     ? `/portfolio?organizationId=${encodeURIComponent(portfolioOrganizationId)}`
-    : '/portfolio/choose';
+    : '/home';
   const companyHref = portfolioOrganizationId
     ? `/company?scope=portfolio&organizationId=${encodeURIComponent(portfolioOrganizationId)}`
     : '/company';
   const homeHref = portfolioScoped
     ? portfolioHomeHref
-    : companyOnly
-      ? '/company'
-      : '/home';
+    : companyMode && companyOrganizationId
+      ? companyScopeHref('/home', companyOrganizationId)
+      : companyOnly
+        ? '/company'
+        : '/home';
   const homeLabel = portfolioScoped
     ? ('Portfolio Home')
     : companyOnly
@@ -147,10 +182,18 @@ export function ConcourseBar() {
   const avatarButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const installReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const [menuPos, setMenuPos] = React.useState<{ top: number; right: number } | null>(null);
+  // Becoming a demo person for a while. Renders for a verified platform admin,
+  // and for a session that was switched into one (so the way back is always
+  // reachable). Everyone else gets nothing at all.
+  const accountSwitch = useAdminAccountSwitcher(verifiedPlatformAdmin);
+  const refreshAccountSwitch = accountSwitch.refresh;
   const toggleMenu = () => {
     const r = avatarWrapRef.current?.getBoundingClientRect();
     if (r) setMenuPos({ top: r.bottom + 10, right: Math.max(8, window.innerWidth - r.right) });
-    setMenuOpen((v) => !v);
+    setMenuOpen((v) => {
+      if (!v) refreshAccountSwitch();
+      return !v;
+    });
   };
 
   // Navigation feel: prefetch only on real pointer/focus intent. The previous
@@ -328,7 +371,7 @@ export function ConcourseBar() {
   // capability (server routes enforce the same gate independently).
   const portfolioRouteFor = (key: AppSection): string => {
     if (purePortfolioContext) {
-      if (!portfolioOrganizationId) return '/portfolio/choose';
+      if (!portfolioOrganizationId) return '/home';
       return key === 'staxis'
         ? `/portfolio/staxis?organizationId=${encodeURIComponent(portfolioOrganizationId)}`
         : `/portfolio/${key}?organizationId=${encodeURIComponent(portfolioOrganizationId)}`;
@@ -339,10 +382,15 @@ export function ConcourseBar() {
         returnTo: acting.request.returnTo,
       });
     }
-    return SECTION_LIST.find((section) => section.key === key)?.navHref ?? '/home';
+    const navHref = SECTION_LIST.find((section) => section.key === key)?.navHref ?? '/home';
+    // In company mode the scope lives in the location, so every pill carries it
+    // and a refresh comes back into the same scope instead of one hotel.
+    return companyMode && companyOrganizationId
+      ? companyScopeHref(navHref, companyOrganizationId)
+      : navHref;
   };
   const items: BarItem[] = (
-    portfolioScoped
+    portfolioScoped || companyMode
       ? SECTION_LIST
       : propertyLoading || !activeProperty
         ? []
@@ -354,6 +402,14 @@ export function ConcourseBar() {
         if (m.key === 'financials') return portfolioFinancialsAvailable;
         return purePortfolioContext
           || portfolioHotelContext?.sectionAvailability[m.key] === true;
+      }
+      // Company mode reads the union of the company's hotels (useEnabledSections)
+      // and takes the money answer from the company standing, which requires the
+      // viewer to see financials at EVERY hotel the scope rolls up.
+      if (companyMode) {
+        if (!enabled[m.key]) return false;
+        if (m.key === 'financials') return scopeStanding.seesFinancials;
+        return true;
       }
       if (!enabled[m.key]) return false;
       if (m.key === 'financials') {
@@ -390,8 +446,39 @@ export function ConcourseBar() {
   const userName = user?.displayName ?? user?.username ?? ('User');
   const userMeta = [
     roleName,
-    portfolioScoped ? portfolioOrganizationName ?? 'Portfolio' : activeProperty?.name,
+    portfolioScoped
+      ? portfolioOrganizationName ?? 'Portfolio'
+      : companyMode
+        ? companyDisplayName ?? 'Your company'
+        : activeProperty?.name,
   ].filter(Boolean).join(' · ');
+
+  // ── THE SWITCHER ──────────────────────────────────────────────────────────
+  // One list, two kinds of row: the whole company, and one hotel. A person who
+  // works for two management companies gets two company rows, which is what
+  // makes the separate company picker unnecessary.
+  //
+  // Selecting a company lands on Home in that scope. Home is the only surface
+  // company scope ships with today, so sending them to the company version of
+  // whatever page they happen to be on would promise a page that is not built.
+  const switcherRows = buildScopeSwitcherRows({
+    companies: portfolio?.data?.contexts ?? [],
+    hotels: properties.map((property) => ({ id: property.id, name: property.name })),
+    activeScope,
+  });
+  const showScopeSwitcher = !portfolioScoped && switcherRows.length > 1;
+  const chooseScope = React.useCallback((row: ScopeSwitcherRow) => {
+    if (row.kind === 'company') {
+      if (!setActiveScope({ kind: 'company', organizationId: row.organizationId }).ok) return;
+      go(companyScopeHref('/home', row.organizationId));
+      return;
+    }
+    if (!setActiveScope({ kind: 'hotel', propertyId: row.propertyId }).ok) return;
+    markHotelSelectedThisTab();
+    // Leaving company mode has to leave the company selector behind too, or the
+    // next render would put the chosen hotel back under a company scope.
+    if (companyMode) go(localAppHref('/home'));
+  }, [companyMode, go, setActiveScope]);
   const showInstallReminder = shouldShowMobileInstallReminder(
     platform,
     installed,
@@ -406,9 +493,12 @@ export function ConcourseBar() {
       <button
         ref={avatarButtonRef}
         type="button"
-        className="cx-avatarbtn"
+        // The ring is the persistent, unobtrusive tell that this session is
+        // somebody else's. Without it, a switched tab left open for an hour
+        // looks exactly like a normal one.
+        className={`cx-avatarbtn${accountSwitch.switchedBackTo ? ' cx-switched' : ''}`}
         onClick={toggleMenu}
-        aria-label={'User menu'}
+        aria-label={accountSwitch.switchedBackTo ? `User menu, switched to ${userName}` : 'User menu'}
         aria-expanded={menuOpen}
       >
         {initial}
@@ -425,21 +515,34 @@ export function ConcourseBar() {
               </div>
             </div>
 
-            {!portfolioScoped && properties.length > 1 && (
+            <AccountSwitcherMenuSection
+              isPlatformAdmin={verifiedPlatformAdmin}
+              switchedBackTo={accountSwitch.switchedBackTo}
+              currentDisplayName={userName}
+              people={accountSwitch.people}
+              currentAccountId={user.accountId ?? null}
+              busy={accountSwitch.busy}
+              onSwitch={(accountId) => accountSwitch.switchTo(accountId)}
+              onReturn={() => accountSwitch.returnToAdmin()}
+            />
+            {accountSwitch.error ? (
+              <div className="cx-menu-note" role="alert">{accountSwitch.error}</div>
+            ) : null}
+
+            {showScopeSwitcher && (
               <>
-                <div className="cx-menu-eyebrow">{'Hotels'}</div>
-                {properties.map((p) => (
+                <div className="cx-menu-eyebrow">{'Where you are working'}</div>
+                {switcherRows.map((row) => (
                   <button
-                    key={p.id}
+                    key={row.key}
                     type="button"
-                    className={`cx-menu-item${p.id === activeProperty?.id ? ' cx-on' : ''}`}
+                    className={`cx-menu-item${row.active ? ' cx-on' : ''}`}
                     onClick={() => {
-                      setActivePropertyId(p.id);
-                      markHotelSelectedThisTab();
+                      chooseScope(row);
                       setMenuOpen(false);
                     }}
                   >
-                    {p.name}
+                    {row.label}
                   </button>
                 ))}
               </>
@@ -492,9 +595,10 @@ export function ConcourseBar() {
     <>
       <MobileConcourseNav
         items={items}
-        propertyOptions={(portfolioScoped ? [] : properties)
-          .map((property) => ({ value: property.id, label: property.name }))}
-        activePropertyId={activeProperty?.id ?? null}
+        scopeOptions={showScopeSwitcher
+          ? switcherRows.map((row) => ({ value: row.key, label: row.label }))
+          : []}
+        activeScopeValue={activeScopeSwitcherKey(switcherRows)}
         userName={userName}
         userMeta={userMeta}
         userInitial={initial}
@@ -511,7 +615,7 @@ export function ConcourseBar() {
         navigationLabel={'Main navigation'}
         sectionsLabel={'Sections'}
         accountLabel={'Account'}
-        propertyLabel={'Hotel'}
+        scopeLabel={'Where you are working'}
         accountMenuLabel={`Open user menu for ${userName}`}
         companyLabel={companyNavigationLabel}
         adminDestination={adminDestination}
@@ -529,9 +633,13 @@ export function ConcourseBar() {
         onCompanyIntent={() => prefetch(companyHref)}
         onSettingsIntent={() => prefetch(portfolioScoped ? companyHref : '/settings')}
         onSignOut={() => { void signOut(); }}
-        onPropertyChange={(propertyId) => {
-          setActivePropertyId(propertyId);
-          markHotelSelectedThisTab();
+        returnToAdminLabel={
+          accountSwitch.switchedBackTo ? `Back to ${accountSwitch.switchedBackTo}` : undefined
+        }
+        onReturnToAdmin={() => accountSwitch.returnToAdmin()}
+        onScopeChange={(value) => {
+          const row = scopeSwitcherRowForKey(switcherRows, value);
+          if (row) chooseScope(row);
         }}
         onInstall={(returnFocusElement) => {
           installReturnFocusRef.current = returnFocusElement;

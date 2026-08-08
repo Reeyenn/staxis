@@ -25,6 +25,7 @@ import {
   fromInventoryRow,
   fromInventoryCountRow,
   toInventoryCountRow,
+  fromWorkOrderRow,
 } from '../db-mappers';
 
 describe('toDate', () => {
@@ -79,7 +80,6 @@ describe('Property mapper round-trip', () => {
       name: 'Comfort Suites',
       totalRooms: 74,
       avgOccupancy: 0.85,
-      hourlyWage: 17,
       checkoutMinutes: 30,
       stayoverMinutes: 20,
       prepMinutesPerActivity: 5,
@@ -96,7 +96,6 @@ describe('Property mapper round-trip', () => {
     assert.equal(reread.name, original.name);
     assert.equal(reread.totalRooms, original.totalRooms);
     assert.equal(reread.avgOccupancy, original.avgOccupancy);
-    assert.equal(reread.hourlyWage, original.hourlyWage);
     assert.equal(reread.timezone, original.timezone);
   });
 });
@@ -211,5 +210,28 @@ describe('Inventory count mapper — atomic session provenance', () => {
     assert.equal(row.count_session_id, 'f7a70f69-232b-471b-8895-608ce88a421c');
     const count = fromInventoryCountRow({ id: 'count-1', ...row });
     assert.equal(count.countSessionId, 'f7a70f69-232b-471b-8895-608ce88a421c');
+  });
+});
+
+describe('Work order severity → board lane', () => {
+  const lane = (severity: unknown) =>
+    fromWorkOrderRow({ id: 'w1', property_id: 'p1', description: 'x', severity }).priority;
+
+  test('maintenance vocabulary maps to its own lanes', () => {
+    assert.equal(lane('urgent'), 'urgent');
+    assert.equal(lane('medium'), 'normal');
+    assert.equal(lane('low'), 'low');
+  });
+
+  test('housekeeper reporter vocabulary (URGENT/MAJOR/MINOR) is not buried in the Normal lane', () => {
+    assert.equal(lane('URGENT'), 'urgent');
+    assert.equal(lane('MAJOR'), 'urgent');
+    assert.equal(lane('MINOR'), 'low');
+  });
+
+  test('ungraded or unknown severities keep the middle lane', () => {
+    assert.equal(lane(null), 'normal');
+    assert.equal(lane(undefined), 'normal');
+    assert.equal(lane('someday-vocabulary'), 'normal');
   });
 });

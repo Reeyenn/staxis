@@ -38,6 +38,10 @@
 //                            entire reason 'closed' and 'resolved' are two
 //                            words (WORK_ORDER_SETTLED_STATUSES).
 //
+// All four are COMPARE-AND-SET on the ticket's current status. A settled work
+// order refuses every one of them, and a ticket somebody else answered while
+// this screen was open refuses too — see the note on the workorder branch.
+//
 // ─── "Can't do this" ───────────────────────────────────────────────────────
 // `outcome: 'cant'` needs a one-line reason and REFUSES without one. The whole
 // value of the state is the sentence that comes with it: an assigner who learns
@@ -86,6 +90,7 @@ import { validateUuid, validateEnum, validateString } from '@/lib/api-validate';
 import { commsContext, ONE_LIST_CTX } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { setTaskStatus } from '@/lib/comms/core';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import { worklistSeesAllSources, mayActOnItem, propertyTimezoneOf } from '@/lib/worklist/core';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
@@ -304,7 +309,29 @@ export async function POST(req: NextRequest): Promise<Response> {
         break;
       }
       case 'workorder': {
-        if (!(await existsScoped('work_orders', sourceId, pid))) return notFound(requestId, headers);
+        // ── a settled ticket is not a ticket any more ────────────────────────
+        // The three endings below used to be written with nothing but "does
+        // this id exist at this hotel", so a Staxis list drawn two minutes ago
+        // could rewrite a settlement it had never seen. Each direction is a
+        // real loss:
+        //   closed  → waiting   puts a ticket somebody judged a non issue BACK
+        //                       on every screen as live work, and wipes the
+        //                       note that explained it.
+        //   closed  → done      files a repair nobody performed, and — when the
+        //                       ticket came from an upkeep schedule — stamps
+        //                       that schedule serviced through the 0366 trigger,
+        //                       after which Staxis goes quiet about the job for
+        //                       a full cadence.
+        //   resolved→ not_an_issue rewrites a repair that DID happen as a thing
+        //                       that never needed doing, over the top of the
+        //                       name of whoever actually did it.
+        // So the row's CURRENT status is read first, and then carried into the
+        // update as a condition: the write lands only if the ticket is still in
+        // the exact state this request was validated against. The gap between
+        // the two reads is not a way through.
+        const current = await workOrderStatus(sourceId, pid);
+        if (current === null) return notFound(requestId, headers);
+        if (workOrderIsSettled(current)) return alreadyAnswered(requestId, headers);
         const nowIso = new Date().toISOString();
         // Three endings, and the difference between them is a fact about the
         // building rather than a shade of the same one.
@@ -320,11 +347,17 @@ export async function POST(req: NextRequest): Promise<Response> {
             // call, which is the one thing an auditor would want to know.
             ? { status: 'closed', resolved_at: nowIso, completed_by_name: ctx.displayName }
             : { status: 'resolved', resolved_at: nowIso, completed_by_name: ctx.displayName };
-        const { error } = await supabaseAdmin
+        const { data, error } = await supabaseAdmin
           .from('work_orders')
           .update(patch)
-          .eq('id', sourceId).eq('property_id', pid);
+          .eq('id', sourceId).eq('property_id', pid)
+          // The state this request was validated against, and the whole of the
+          // race guard. Somebody else answering the same ticket in the
+          // meantime — settling it, or deferring it — takes this write out.
+          .eq('status', current)
+          .select('id').maybeSingle();
         if (error) return fail(requestId, headers, error.message);
+        if (!data) return alreadyAnswered(requestId, headers);
         break;
       }
       case 'pm': {
@@ -505,8 +538,54 @@ async function settleSupersededRun(id: string, pid: string, byStaffId: string | 
   }
 }
 
-/** Re-read a row scoped by BOTH id AND property_id — a foreign id is indistinguishable from a missing one. */
-async function existsScoped(table: 'complaints' | 'work_orders' | 'preventive_tasks', id: string, pid: string): Promise<boolean> {
+/**
+ * A work order's stored status, scoped by BOTH id AND property_id.
+ *
+ * Null for a row that is not this hotel's, exactly like `existsScoped` — a
+ * foreign id has to stay indistinguishable from a missing one. Returns the raw
+ * legacy enum value ('submitted' / 'assigned' / 'in_progress' / 'deferred' /
+ * 'resolved' / 'closed') rather than the two-word UI status, because it is used
+ * as the compare-and-set condition on the update and has to be the same string
+ * the column holds.
+ */
+async function workOrderStatus(id: string, pid: string): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from('work_orders')
+    .select('status')
+    .eq('id', id).eq('property_id', pid)
+    .maybeSingle();
+  if (!data) return null;
+  const status = (data as { status?: unknown }).status;
+  // An absent status reads as an open ticket everywhere else on the board
+  // (db-mappers.ts's own fallback); it must read the same here, or a legacy row
+  // with a null status would be unanswerable.
+  return typeof status === 'string' ? status : 'submitted';
+}
+
+/**
+ * Somebody got to this row first.
+ *
+ * 409 rather than 404: the ticket is real and the caller is entitled to it, the
+ * screen they tapped from is simply out of date. Deliberately NOT a silent
+ * success — a write that reports as recorded and changed nothing is the failure
+ * the whole endings vocabulary exists to avoid.
+ */
+function alreadyAnswered(requestId: string, headers: Record<string, string>) {
+  return err('Somebody already answered this one. Refresh the list to see where it got to.', {
+    requestId, status: 409, code: ApiErrorCode.ValidationFailed, headers,
+  });
+}
+
+/**
+ * Re-read a row scoped by BOTH id AND property_id — a foreign id is
+ * indistinguishable from a missing one.
+ *
+ * WORK ORDERS ARE DELIBERATELY NOT IN THIS UNION. "It exists" is not enough for
+ * a table with two settled statuses; that branch reads the status and writes
+ * against it (workOrderStatus above), and a mere existence check there is the
+ * bug this note exists to stop somebody re-introducing.
+ */
+async function existsScoped(table: 'complaints' | 'preventive_tasks', id: string, pid: string): Promise<boolean> {
   const { data } = await supabaseAdmin.from(table).select('id').eq('id', id).eq('property_id', pid).maybeSingle();
   return !!data;
 }

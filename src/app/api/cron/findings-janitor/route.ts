@@ -105,6 +105,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { ok } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
+import { fetchAllRows } from '@/lib/supabase-paginate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -200,13 +201,20 @@ export async function GET(req: NextRequest) {
 
   // ── B. finding_runs, keeping the newest N per property ──────────────────
   try {
-    const { data: props, error: propErr } = await supabaseAdmin
-      .from('finding_runs')
-      .select('property_id');
-    if (propErr) throw new Error(propErr.message);
-    const propertyIds = [
-      ...new Set(((props ?? []) as Array<{ property_id: string }>).map((r) => r.property_id)),
-    ];
+    // PAGED. PostgREST caps every response at 1000 rows regardless of .limit()
+    // (src/lib/supabase-paginate.ts), and this table gains one row per hotel
+    // per night. A single-shot read of it therefore discovers only the hotels
+    // that happen to fall inside the first page, and every other hotel's run
+    // history is never swept — a retention job quietly retaining everything,
+    // which is the failure mode a retention job cannot report on itself.
+    const props = await fetchAllRows<{ property_id: string }>((from, to) => (
+      supabaseAdmin
+        .from('finding_runs')
+        .select('property_id')
+        .order('property_id', { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{ data: { property_id: string }[] | null; error: unknown }>
+    ));
+    const propertyIds = [...new Set(props.map((r) => r.property_id))];
 
     for (const propertyId of propertyIds) {
       // Newest-first, skip the keepers, delete the tail. Reading ids rather

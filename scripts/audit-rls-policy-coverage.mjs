@@ -484,6 +484,31 @@ for (const f of files) {
   processMigration(f, readFileSync(join(MIGRATIONS, f), 'utf8'));
 }
 
+// ── Non-vacuity floor (auth sweep 2026-08-07) ─────────────────────────────
+//
+// This gate's only failure signal is `violations.length > 0`, so anything that
+// leaves the table map empty — a moved/renamed migrations directory, a glob
+// that stops matching, a parser change that stops recognising `create table` —
+// reads as a clean pass and prints "✓ … 0 table(s)". `rls-policies-shape.test`
+// asserts this script exits 0 and does not read the counts either, so a
+// silently-empty scan would go green in CI for as long as it took somebody to
+// notice the number.
+//
+// These floors are far below the real numbers (387 migrations, 264
+// tenant-scoped tables at the time of writing), so they can only fire on a
+// genuine collapse, never on ordinary growth. Raise them only if they ever
+// start to bind.
+const MIN_MIGRATIONS = 100;
+const MIN_TENANT_SCOPED_TABLES = 50;
+if (files.length < MIN_MIGRATIONS) {
+  console.error(
+    `✗ audit-rls-policy-coverage: only ${files.length} migration(s) found in ${MIGRATIONS} `
+    + `(expected at least ${MIN_MIGRATIONS}). The scan is empty, not clean — fix the input `
+    + 'before trusting this gate.',
+  );
+  process.exit(1);
+}
+
 const violations = [];
 let scoped = 0;
 for (const [name, t] of tables.entries()) {
@@ -542,6 +567,16 @@ if (violations.length > 0) {
   console.error('If a table is intentionally service-role-only (no browser/anon access), either:');
   console.error('  - Add the table name to SERVICE_ROLE_ONLY in this script with a justification, OR');
   console.error('  - Add a SQL comment `-- @rls: service-role-only — <reason>` near the CREATE TABLE.');
+  process.exit(1);
+}
+
+if (scoped < MIN_TENANT_SCOPED_TABLES) {
+  console.error(
+    `✗ audit-rls-policy-coverage: only ${scoped} tenant-scoped table(s) were recognised across `
+    + `${files.length} migration(s) and ${tables.size} parsed table(s) (expected at least `
+    + `${MIN_TENANT_SCOPED_TABLES}). Something stopped the parser from seeing tables or their `
+    + 'columns, so a green result here would mean nothing.',
+  );
   process.exit(1);
 }
 

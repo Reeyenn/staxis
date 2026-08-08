@@ -20,11 +20,17 @@
  * Sources per tile (all read-only, via supabaseAdmin):
  *   staxis         — agent_nudges (status='pending', scoped to the
  *                    caller's accounts.id — nudges are per-user)
- *   dashboard      — today_property_counts_v1 RPC (in_house / total_rooms)
+ *   dashboard      — today_property_counts_v1 RPC, read through the SAME
+ *                    occupancy derivation the Dashboard ring uses
+ *                    (src/lib/home-occupancy-summary.ts). Never divides
+ *                    in_house by total_rooms itself: both are COALESCEd to 0
+ *                    from different tables and the quotient is a fabricated
+ *                    "0% occupied" on any hotel whose counts feed is silent.
  *   housekeeping   — room_work_plan_v1 for today's business_date
  *   communications — complaints with status open / in_progress
- *   maintenance    — work_orders not yet 'resolved' (legacy enum:
- *                    submitted/assigned/in_progress all mean open;
+ *   maintenance    — work_orders not yet settled (legacy enum:
+ *                    submitted/assigned/in_progress/deferred all mean open,
+ *                    'resolved' and 'closed' both mean off the board;
  *                    severity 'urgent' is the "high" bucket)
  *   inventory      — counted inventory current_stock vs par_level (same rule as Inventory)
  *   staff          — scheduled_shifts assigned for today (kind='shift')
@@ -38,6 +44,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { workOrderIsSettled } from '@/lib/db-mappers';
 import { validateUuid } from '@/lib/api-validate';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { getMonthRevenue } from '@/lib/financials/revenue';
@@ -46,6 +53,7 @@ import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { getEnabledSections } from '@/lib/sections/server';
 import { isSectionEnabled, type AppSection, type EnabledSections } from '@/lib/sections/registry';
 import { summarizeHomeInventory } from '@/lib/home-inventory-summary';
+import { summarizeHomeOccupancy } from '@/lib/home-occupancy-summary';
 import {
   resolveAdminCompanyPreviewTarget,
   assertExactSingleHotelRelationshipScope,
@@ -303,23 +311,33 @@ async function staxisTile(pid: string, userId: string): Promise<TileLine> {
   return { en: 'All handled', es: 'All handled', tone: 'ok' };
 }
 
-/** dashboard — occupancy % today from the Plan-v4 counts RPC. */
+/**
+ * dashboard — occupancy % today from the Plan-v4 counts RPC.
+ *
+ * The derivation is NOT here. It is summarizeHomeOccupancy →
+ * occupancyPctFromCounts, the same single occupancy derivation the Dashboard
+ * ring and the nightly seal read, so this tile and that ring cannot disagree
+ * about one hotel at one moment. This function's whole job is the two reads.
+ * See src/lib/home-occupancy-summary.ts for the fabricated-zero incident that
+ * put it there.
+ */
 async function dashboardTile(pid: string, today: string): Promise<TileLine> {
-  const { data, error } = await supabaseAdmin.rpc('today_property_counts_v1', {
-    p_property_id: pid,
-    p_date: today,
-  });
-  if (error) throw new Error(error.message);
-  const row = ((data ?? []) as Array<{ in_house?: unknown; total_rooms?: unknown }>)[0];
-  const inHouse = Number(row?.in_house);
-  const totalRooms = Number(row?.total_rooms);
-  // Cold start / no CUA yet: total_rooms is 0 — occupancy isn't derivable,
-  // fall back muted rather than showing a fabricated 0%.
-  if (!Number.isFinite(inHouse) || !Number.isFinite(totalRooms) || totalRooms <= 0) {
-    return FALLBACK.dashboard;
-  }
-  const pct = Math.round((inHouse / totalRooms) * 100);
-  return { en: `${pct}% occupied`, es: `${pct}% occupied`, tone: 'ok' };
+  const [counts, property] = await Promise.all([
+    supabaseAdmin.rpc('today_property_counts_v1', { p_property_id: pid, p_date: today }),
+    supabaseAdmin.from('properties').select('total_rooms').eq('id', pid).maybeSingle(),
+  ]);
+  if (counts.error) throw new Error(counts.error.message);
+  // The hotel's own inventory is what the Dashboard divides by. A failed read
+  // is not a reason to divide by the PMS's partial sample instead — that is how
+  // a tile claims a hotel is 125% full — so it takes the tile down to the guard
+  // and the muted door.
+  if (property.error) throw new Error(property.error.message);
+
+  const rows = (counts.data ?? []) as unknown as Array<Record<string, unknown>>;
+  const line = summarizeHomeOccupancy(rows[0] ?? null, property.data?.total_rooms);
+  // No room mix reported yet: occupancy is unknown, not zero and not full.
+  if (!line) return FALLBACK.dashboard;
+  return { en: line.en, es: line.en, tone: line.tone };
 }
 
 /** housekeeping — rooms still to clean today (canonical plan not finished). */
@@ -366,17 +384,21 @@ async function communicationsTile(pid: string): Promise<TileLine> {
 
 /** maintenance — open work orders + how many are urgent. */
 async function maintenanceTile(pid: string): Promise<TileLine> {
-  // One read, count severities in JS. DB status is the legacy enum:
-  // anything except 'resolved' reads as open (see db-mappers.ts).
+  // One read, filter and count in JS. DB status is the legacy enum, and TWO of
+  // its values mean the ticket is off the board: 'resolved' (somebody fixed it)
+  // and 'closed' (somebody looked and it was not actually a problem). Asked as
+  // a bare `.neq('status','resolved')`, this tile counted every non issue the
+  // hotel had ever closed as an open work order, and the number only ever grew.
+  // The settled set is read from db-mappers so it cannot drift from the board's.
   const { data, error } = await supabaseAdmin
     .from('work_orders')
-    .select('severity')
+    .select('severity, status')
     .eq('property_id', pid)
     .neq('status', 'resolved')
     .limit(500);
   if (error) throw new Error(error.message);
 
-  const rows = data ?? [];
+  const rows = (data ?? []).filter((r) => !workOrderIsSettled((r as { status?: unknown }).status));
   const open = rows.length;
   const high = rows.filter((r) => (r as { severity?: unknown }).severity === 'urgent').length;
 
@@ -395,7 +417,8 @@ async function maintenanceTile(pid: string): Promise<TileLine> {
   return { en: enBase, es: enBase, tone: 'warn' };
 }
 
-/** inventory — items at/below the 70/30 stock thresholds vs par. */
+/** inventory — counted items below par, on the Inventory tab's own 0.5/1.0
+ *  rule (NOT the app-wide 70/30 family — see summarizeHomeInventory). */
 async function inventoryTile(pid: string): Promise<TileLine> {
   const { data, error } = await supabaseAdmin
     .from('inventory')

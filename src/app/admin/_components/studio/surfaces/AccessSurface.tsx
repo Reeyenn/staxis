@@ -95,8 +95,7 @@ const ROLE_LABELS: Record<string, string> = {
 
 const COMPANY_ROLE_LABELS: Record<(typeof COMPANY_SCOPE_ROLES)[number], string> = {
   owner: 'Owner',
-  vp: 'VP',
-  finance: 'Finance',
+  regional_manager: 'Regional Manager',
 };
 
 const PROFILE_LABELS: Record<AccessProfile, string> = {

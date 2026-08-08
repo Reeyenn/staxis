@@ -43,6 +43,7 @@ import {
   COMPANION_DECLINES_BEFORE_DROP,
   COMPANION_MAX_SPEECH_PER_DAY,
   COMPANION_MEMORY_TOPIC_CAP,
+  COMPANION_MEMORY_TOPICS_MAX_BYTES,
   COMPANION_MIN_GAP_MINUTES,
 } from './charter';
 import {
@@ -50,6 +51,7 @@ import {
   type TeachFlow,
 } from './copy';
 import type { CompanionPageKey } from './pages';
+import { repliesFor, type CompanionReply, type CompanionReplyKind } from './replies';
 
 export type { TeachFlow } from './copy';
 
@@ -101,6 +103,24 @@ export interface CompanionMemory {
   tourDeclined: boolean;
   /** Set when the tour was actually taken, so it is not re-offered either. */
   tourTakenAt: string | null;
+  /**
+   * How the tour ended, or null if it was never started.
+   *
+   * `tourTakenAt` alone answers "do not offer this again", which is all the
+   * manners engine needs. This answers the different question the founder
+   * asked for: a tour somebody walked out of halfway is a fact worth having in
+   * the hotel's own record, and a fact the companion must never bring up
+   * unprompted. Stored, journaled once, and read by nothing that speaks.
+   */
+  tourEndedAs: 'finished' | 'skipped' | null;
+  /**
+   * The newest shipped change this person is caught up on, YYYY-MM-DD.
+   *
+   * Stamped the moment the companion has anything to do with them, so a new
+   * hire is never walked through what shipped before they existed. See
+   * whats-new.ts for why this and the topics ledger are both needed.
+   */
+  whatsNewThrough: string | null;
   /** ISO of the last unprompted message, for the minimum-gap rule. */
   lastSpokeAt: string | null;
   /** Hotel-local day `spokenCount` belongs to. A new day resets the count. */
@@ -139,6 +159,8 @@ export const EMPTY_COMPANION_MEMORY: CompanionMemory = {
   taught: {},
   tourDeclined: false,
   tourTakenAt: null,
+  tourEndedAs: null,
+  whatsNewThrough: null,
   lastSpokeAt: null,
   spokenDay: null,
   spokenCount: 0,
@@ -196,6 +218,14 @@ export function parseCompanionMemory(raw: unknown): CompanionMemory {
     taught,
     tourDeclined: o.tourDeclined === true,
     tourTakenAt: isIsoString(o.tourTakenAt) ? o.tourTakenAt : null,
+    // A closed pair, never a free string: this lands in a jsonb blob a request
+    // body can reach, and anything else in it would be junk in a permanent
+    // record. Unreadable degrades to null, which reads as "never started".
+    tourEndedAs: o.tourEndedAs === 'finished' || o.tourEndedAs === 'skipped' ? o.tourEndedAs : null,
+    // A day string, same shape as the ones above. Degrading to null means
+    // "caught up on nothing", which costs at most one offer of a change they
+    // had already seen. The other direction would silently swallow one.
+    whatsNewThrough: isDayString(o.whatsNewThrough) ? o.whatsNewThrough : null,
     lastSpokeAt: isIsoString(o.lastSpokeAt) ? o.lastSpokeAt : null,
     spokenDay: isDayString(o.spokenDay) ? o.spokenDay : null,
     spokenCount: Number.isFinite(spokenCount) && spokenCount > 0 ? Math.min(Math.floor(spokenCount), 99) : 0,
@@ -220,19 +250,85 @@ function isDayString(v: unknown): v is string {
 }
 
 /**
- * Keep the blob bounded. Live topics fall off before dropped ones, because
- * forgetting that somebody said No is the failure that actually annoys people,
- * while forgetting that we offered something today costs at most one repeat.
+ * Keep the blob bounded, IN BYTES, against the size the column actually
+ * checks.
+ *
+ * ─── WHY A COUNT WAS THE WRONG BOUND ───────────────────────────────────────
+ *
+ * This used to keep sixty topics and nothing else. Topic keys are accepted up
+ * to two hundred characters, so sixty of them serialize to about sixteen
+ * kilobytes against a column that refuses anything over eight
+ * (`staxis_user_prefs_companion_memory_size_ck`, migration 0417). The write
+ * started failing around the thirtieth topic, and what failed with it was the
+ * whole ledger: a refused UPSERT means `spokenCount` stops advancing, so the
+ * daily speech cap stops being enforced across page loads, and new declines
+ * stop sticking, so a No stops being permanent. A cap that breaks the other
+ * caps is worse than no cap.
+ *
+ * ─── WHAT SURVIVES AN EVICTION ─────────────────────────────────────────────
+ *
+ * Dropped topics first, always. Forgetting that somebody said No twice is the
+ * failure that actually annoys people, and it is the only one here that a
+ * person would notice. Then whoever has said No most. Then the most RECENTLY
+ * offered, because a topic nobody has heard about in a month is the one whose
+ * "not today" is worth the least. The key breaks ties so the same input always
+ * produces the same output.
+ *
+ * Nothing outside this map is ever evicted: the welcome stamp, the notices
+ * cursors and the speech counters are the fields that enforce the limits, and
+ * they are held out of the budget by COMPANION_MEMORY_FIXED_RESERVE_BYTES
+ * rather than competing with topics for room.
  */
 function capTopics(topics: Record<string, CompanionTopicMemory>): Record<string, CompanionTopicMemory> {
   const entries = Object.entries(topics);
-  if (entries.length <= COMPANION_MEMORY_TOPIC_CAP) return topics;
+  if (entries.length === 0) return topics;
+  // The cheap ceiling first. Under both bounds nothing is copied at all, which
+  // is the case that runs on every single reducer call.
+  if (entries.length <= COMPANION_MEMORY_TOPIC_CAP
+    && topicsByteSize(entries) <= COMPANION_MEMORY_TOPICS_MAX_BYTES) {
+    return topics;
+  }
   const ranked = entries.sort((a, b) => {
     if (a[1].dropped !== b[1].dropped) return a[1].dropped ? -1 : 1;
     if (a[1].declines !== b[1].declines) return b[1].declines - a[1].declines;
+    const day = (a[1].lastOfferedDay ?? '').localeCompare(b[1].lastOfferedDay ?? '');
+    if (day !== 0) return -day;
     return a[0].localeCompare(b[0]);
   });
-  return Object.fromEntries(ranked.slice(0, COMPANION_MEMORY_TOPIC_CAP));
+
+  const kept: Array<[string, CompanionTopicMemory]> = [];
+  // Two braces on an empty object, which every entry below is added inside.
+  let bytes = 2;
+  for (const entry of ranked) {
+    if (kept.length >= COMPANION_MEMORY_TOPIC_CAP) break;
+    const cost = entryByteSize(entry) + (kept.length > 0 ? 1 : 0);
+    if (bytes + cost > COMPANION_MEMORY_TOPICS_MAX_BYTES) break;
+    bytes += cost;
+    kept.push(entry);
+  }
+  return Object.fromEntries(kept);
+}
+
+/**
+ * How much one `"key":{…}` pair weighs, serialized, in bytes.
+ *
+ * TextEncoder rather than Buffer or `.length`: this module is imported by the
+ * browser hook as well as the route, and a topic key can hold any character a
+ * finding id or a detector name carries.
+ */
+const TOPIC_BYTES = new TextEncoder();
+
+function entryByteSize(entry: [string, CompanionTopicMemory]): number {
+  return TOPIC_BYTES.encode(
+    `${JSON.stringify(entry[0])}:${JSON.stringify(entry[1])}`,
+  ).length;
+}
+
+function topicsByteSize(entries: Array<[string, CompanionTopicMemory]>): number {
+  // Braces, plus each entry, plus the comma between them.
+  let total = 2 + Math.max(0, entries.length - 1);
+  for (const entry of entries) total += entryByteSize(entry);
+  return total;
 }
 
 // ─── Candidates ─────────────────────────────────────────────────────────────
@@ -293,6 +389,35 @@ export interface CompanionCandidate {
    * untouched: this reopens a question, it does not answer one.
    */
   seed?: string;
+  /**
+   * Which reply vocabulary this candidate speaks.
+   *
+   * Carried rather than re-derived, because the thing that knows a card is a
+   * preventive follow-up is the code that read the card. It picks the question
+   * producer and nothing else; the replies below are already built.
+   */
+  replyKind: CompanionReplyKind;
+  /**
+   * WHAT A PERSON MAY SAY BACK, BUILT BY WHATEVER BUILT THE SENTENCE.
+   *
+   * This field is the whole point of the reply work. A candidate used to carry
+   * a `destination` and nothing else, and the question under it was then
+   * invented to fit that routing hint: a fire-panel statement got "Want me to
+   * take you to Staxis?" over [Yes] [No thanks], which answers nothing anybody
+   * asked. The source surfaces already knew the honest answers. Now they say
+   * them.
+   *
+   * Capped at three by construction in replies.ts, never by a slice here.
+   */
+  replies: readonly CompanionReply[];
+  /**
+   * The model-written question for this card, already guarded, or null.
+   *
+   * Null is the ordinary case and means "use the per-kind template". Nothing
+   * phrases anything at the moment this candidate is built; a question here was
+   * written by a pass that already ran a model, hours ago, and stored.
+   */
+  judgedQuestion?: string | null;
 }
 
 // ─── Decision ───────────────────────────────────────────────────────────────
@@ -328,6 +453,13 @@ export type CompanionSpeech =
       /** See CompanionCandidate.seed. Present only for a candidate that
        *  carried one; a yes then reopens the conversation instead of walking. */
       seed?: string;
+      /** The candidate's own replies, unchanged. Never re-derived from the
+       *  destination: re-deriving them is the bug this all exists to end. */
+      replies: readonly CompanionReply[];
+      /** Picks the question producer. See CompanionCandidate.replyKind. */
+      replyKind: CompanionReplyKind;
+      /** The judged question, or null for the template. */
+      judgedQuestion: string | null;
     };
 
 export interface MannersInput {
@@ -433,6 +565,9 @@ export function decideCompanionSpeech(input: MannersInput): CompanionSpeech {
       destination: candidate.destination,
       severity: candidate.severity ?? DEFAULT_COMPANION_SEVERITY,
       ...(candidate.seed ? { seed: candidate.seed } : {}),
+      replies: candidate.replies ?? [],
+      replyKind: candidate.replyKind,
+      judgedQuestion: candidate.judgedQuestion ?? null,
     };
   }
 
@@ -577,6 +712,11 @@ export type PanelAskDecision =
       sentence: string;
       destination: CompanionPageKey | null;
       severity: CompanionSeverity;
+      /** The candidate's own replies. A panel ask about a named person gets
+       *  its own "stop watching this", which is why it is not the trace set. */
+      replies: readonly CompanionReply[];
+      replyKind: CompanionReplyKind;
+      judgedQuestion: string | null;
     };
 
 export interface PanelAskInput {
@@ -625,6 +765,14 @@ export function decidePanelAsk(input: PanelAskInput): PanelAskDecision {
       sentence: candidate.text.trim(),
       destination: candidate.destination,
       severity: candidate.severity ?? DEFAULT_COMPANION_SEVERITY,
+      // The panel ask has its own vocabulary, not the candidate's: the venue
+      // changes the honest answers. "Show me what you found" reads right inside
+      // a panel somebody opened and would read as a boast in a corner pill, and
+      // "stop watching this" is a thing people want to say about a pattern
+      // concerning a colleague and rarely about a stock count.
+      replies: repliesFor({ kind: 'panel_ask' }),
+      replyKind: 'panel_ask',
+      judgedQuestion: candidate.judgedQuestion ?? null,
     };
   }
   return { ask: false, refusal: 'nothing_to_say' };
@@ -740,6 +888,40 @@ export function rememberTourDeclined(memory: CompanionMemory): CompanionMemory {
 
 export function rememberTourTaken(memory: CompanionMemory, now: Date): CompanionMemory {
   return { ...memory, tourTakenAt: now.toISOString() };
+}
+
+/**
+ * The tour ended, one way or the other.
+ *
+ * FIRST ENDING WINS. A run that is already recorded as finished must not be
+ * overwritten by a stale tab reporting a skip from the same walk, and a skip
+ * must not be upgraded to a finish by a replay. Either way `tourTakenAt` is
+ * stamped, because both endings mean the same thing to the offer: it has been
+ * had, and it is never offered unprompted again. Reaching it from the panel
+ * stays available forever. See `tourIsReachable`.
+ */
+export function rememberTourEnded(
+  memory: CompanionMemory,
+  ending: 'finished' | 'skipped',
+  now: Date,
+): CompanionMemory {
+  const stamped = rememberTourTaken(memory, now);
+  if (memory.tourEndedAs !== null) return stamped;
+  return { ...stamped, tourEndedAs: ending };
+}
+
+/**
+ * This person is caught up on shipped changes through `day`.
+ *
+ * MONOTONIC, for the same reason the notices stamps are: a stale tab holding
+ * an older high-water mark must not drag the cursor backwards and re-offer a
+ * change somebody already answered. A malformed day is ignored rather than
+ * written.
+ */
+export function rememberWhatsNewSeen(memory: CompanionMemory, day: string): CompanionMemory {
+  if (!isDayString(day)) return memory;
+  if (memory.whatsNewThrough !== null && memory.whatsNewThrough >= day) return memory;
+  return { ...memory, whatsNewThrough: day };
 }
 
 /** Called the moment an offer is shown, not when it is answered. */

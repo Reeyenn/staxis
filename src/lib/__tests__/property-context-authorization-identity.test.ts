@@ -23,10 +23,6 @@ const companyPage = readFileSync(
   join(process.cwd(), 'src', 'app', '(hotel)', 'company', 'page.tsx'),
   'utf8',
 );
-const companyInvitationPage = readFileSync(
-  join(process.cwd(), 'src', 'app', '(public)', 'company-invite', '[token]', 'page.tsx'),
-  'utf8',
-);
 
 function section(start: string, end: string): string {
   const startIndex = propertyContext.indexOf(start);
@@ -119,10 +115,13 @@ describe('PropertyContext authorization identity', () => {
   });
 
   test('selecting the already-active hotel preserves capability readiness', () => {
-    const selection = section(
+    // The setter takes a SCOPE now, so the hotel path starts where the company
+    // early-return ends. Slice to that path so this pins the same invariant.
+    const setter = section(
+      'const setActiveScope = useCallback',
       'const setActivePropertyId = useCallback',
-      '// Cross-tab sync',
     );
+    const selection = setter.slice(setter.indexOf('const id = selection.propertyId;'));
     const sameHotelGuard = selection.indexOf('if (id === activePropertyId)');
     const snapshotClear = selection.indexOf('setCapabilitySnapshot(null)');
 
@@ -130,9 +129,14 @@ describe('PropertyContext authorization identity', () => {
     assert.ok(snapshotClear > sameHotelGuard, 'same-hotel return must happen before capability reset');
     assert.match(
       selection.slice(sameHotelGuard, snapshotClear),
-      /if \(id === activePropertyId\)[\s\S]*?return;/,
+      /if \(id === activePropertyId\)[\s\S]*?return \{ ok: true \};/,
     );
-    assert.match(selection, /\}, \[activePropertyId, actingHotelId\]\);/);
+    assert.match(setter, /\}, \[activePropertyId, actingHotelId\]\);/);
+    // A company selection is a first-class value on the same setter, never a
+    // magic hotel id smuggled through the hotel path.
+    assert.match(setter, /if \(selection\.kind === 'company'\)/);
+    // An acting-context pin or a cancelled workflow REPORTS the refusal.
+    assert.match(setter, /return \{ ok: false, reason: 'blocked' \};/);
   });
 
   test('the property selector invalidates stale coverage on same-UID authorization changes', () => {
@@ -164,8 +168,10 @@ describe('PropertyContext authorization identity', () => {
     assert.match(propertyContext, /activePropertyViewerKey,/);
   });
 
+  // The retired company-invitation page was the other writer checked here. It
+  // is gone along with the second invitation system, so the Company page is now
+  // the whole surface that has to invalidate coverage after an access change.
   test('same-tab access lifecycle writes explicitly invalidate authorization coverage', () => {
-    assert.match(companyInvitationPage, /notifyAuthorizationChanged\(\);[\s\S]*?replace\('\/company'\)/);
     assert.match(
       companyPage,
       /const completeAccessMutation = React\.useCallback\(\(\) => \{[\s\S]*?notifyAuthorizationChanged\(\);[\s\S]*?setRetryKey/,

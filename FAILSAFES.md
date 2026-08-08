@@ -55,30 +55,65 @@ We deliberately split crons across two schedulers because they have different re
 ### Vercel native crons (`vercel.json`)
 **Use for:** cadence under 30 minutes, OR any cron where reliable timing matters operationally.
 
+**The tables below are a summary, not the source of truth.** `vercel.json` and
+`.github/workflows/*` are the runtime triggers, and
+`src/lib/automation/job-catalog.ts` is the one inventory that parity tests hold
+them to. This section drifted badly once (it listed four Vercel crons when
+there were nineteen, and named three workflows that had been deleted months
+earlier, including one it told you never to disable), so check the catalog
+before trusting a row here.
+
+As of 2026-08-07 there are **19 Vercel cron entries**. The five-minute tier is
+the operational one:
+
 | Path | Cadence | What it does |
 |---|---|---|
-| `/api/cron/process-agent-schedules` | every 5 min | Delivers agent reminders + materializes recurring Communications tasks |
+| `/api/cron/process-agent-schedules` | every 5 min | Delivers agent reminders + materializes recurring to-dos |
 | `/api/cron/agent-sweep-reservations` | every 5 min | Releases stale AI cost reservations |
 | `/api/cron/sweep-account-lifecycle` | every 5 min | Finishes interrupted account disable/reactivate operations from their durable intent |
 | `/api/cron/vercel-watchdog` | every 5 min | Checks the production app/doctor and fails visibly on red |
+| `/api/cron/companion-event-wake` | every 10 min | One deterministic look at each hotel's `activity_log`; a model call only where something landed |
+
+The other fourteen are daily/weekly housekeeping, the AI findings layer's four,
+and the retention jobs. `docs/cron-triggers.md` has the full table with
+purposes.
 
 Vercel Pro guarantees per-minute precision. Operational sub-30-minute jobs stay here because GitHub Actions has previously delayed tight schedules by 7–17×. The Twilio-backed `process-sms-jobs` worker was retired on 2026-07-17; reminders and recurring in-app tasks must remain independent of any SMS transport.
 
 ### GitHub Actions workflows (`.github/workflows/`)
 **Use for:** daily/weekly cadences where hour-scale precision is fine.
 
+Every workflow with a LIVE `schedule:` block, as of 2026-08-07:
+
 | Workflow | Cadence | What it catches |
 |---|---|---|
 | `tests.yml` | Every push and PR | Broken tests |
 | `post-deploy-smoke-test.yml` | Every push to main | Broken deploy, missing/stale env vars |
-| `daily-drift-check.yml` | 8am Central daily | Credential drift between Vercel, Railway, Fly |
-| `ml-cron.yml` | Multiple daily + weekly | ML training, inference, prior aggregation |
-| `ml-shadow-evaluate-cron.yml` | Daily 11:30 UTC | Shadow-model promotion/rejection pass |
+| `ml-cron.yml` | Sun 07:30 + Sun 09:00 + daily 11:00 UTC | Inventory priors, weekly retrain, daily prediction |
 | `purge-old-error-logs-cron.yml` | Daily 09:30 UTC | error_logs retention sweep + api_limits cleanup |
-| `scraper-weekly-digest-cron.yml` | Sat 14:00 UTC | Weekly scraper performance summary |
-| `pull-jobs-cron.yml` | Disabled (workflow_dispatch only) | Future: drain Railway pull-jobs queue |
+| `robot-walk.yml` | Daily 10:00 UTC | A real browser signs into the live site and uses it |
+| `dependency-audit.yml` | Mon 09:17 UTC | High/critical dependency advisories |
+
+Manual-only (no live `schedule:`), and kept that way deliberately:
+`memory-consolidate-cron.yml`, `ml-retention-purge.yml`, `ml-smoke-nightly.yml`,
+`sentry-test.yml`, `check-migrations-applied.yml` (event-driven), and
+`ml-shadow-evaluate-cron.yml` (its route is gone; the job is guarded off rather
+than deleted).
+
+`daily-drift-check.yml`, `scraper-weekly-digest-cron.yml` and
+`pull-jobs-cron.yml` were listed here for months after they stopped existing.
+They went with the Railway scraper in the Plan v4 cutover. **The drift check
+they described has no replacement**, so nothing compares credentials across
+platforms today; treat that as an open gap, not as covered.
 
 Each workflow uses `CRON_SECRET` from GitHub repo secrets, prints the full response body, uses `--retry 1` (was 2 before pass-6) for transient blips, and fails loudly so GitHub emails Reeyen.
+
+**A job nothing can start must not curl a route that exists only in its
+comment.** `ml-cron.yml`'s `auto-rollback` job and the whole of
+`ml-shadow-evaluate-cron.yml` both call routes that were deleted, and both
+accepted `workflow_dispatch`, so every manual run of the ML workflow ended red
+on a 404. `cron-coverage.test.ts` now refuses that: any job a trigger can reach
+must target a route that is on disk.
 
 ### Rules for editing
 
@@ -138,7 +173,11 @@ Symptom → diagnosis → fix → verify → prevention, per failure type. When 
 
 **Touch points:** every file under `src/app/api/cron/`, plus the doctor route's `EXPECTED_CRONS` list. When you add a new cron, update both.
 
-`run-management-patterns` is the background owner for management-company findings: it runs the live legacy portfolio checks and the shadow-only v2 evaluator through their existing claims/leases, and it writes no heartbeat when any organization is incomplete or unavailable, so production cannot advertise a successful fleet pass from partial coverage. **It is unscheduled, and its heartbeat is deliberately NOT in `EXPECTED_CRONS`.** It was briefly scheduled daily on 2026-07-29 and parked again the same day on the owner's ruling: the whole AI layer stays off behind one master switch, so this cron re-enters `vercel.json`, `SCHEDULE_REGISTRY`, `EXPECTED_CRONS` and `WORKER_META` together with `run-findings`, `findings-sweep` and `findings-janitor` and not before. The single checklist is `docs/cron-triggers.md`, "The AI master switch". Re-adding it to `EXPECTED_CRONS` on its own would make the doctor report a missing heartbeat forever, which is the second "Don't" above.
+`run-management-patterns` is the background owner for management-company findings: it runs the live legacy portfolio checks and the shadow-only v2 evaluator through their existing claims/leases, and it writes no heartbeat when any organization is incomplete or unavailable, so production cannot advertise a successful fleet pass from partial coverage.
+
+**Scheduled since 2026-08-06 at `0 8 * * *`,** when the founder flipped the AI master switch. (This paragraph said "It is unscheduled, and its heartbeat is deliberately NOT in `EXPECTED_CRONS`" for a day after that stopped being true. It is in `vercel.json`, and `EXPECTED_CRONS` is a derived projection of the job catalog, so it is there too.) The half of the ruling that still stands is the one that always will: it moves TOGETHER with `run-findings`, `findings-sweep` and `findings-janitor`, in either direction, in one commit. It was briefly scheduled daily on 2026-07-29 ON ITS OWN, on a fleet whose only management company was the seeded demo one, and parked again the same day. Parking one of the four now has the mirror-image failure: a heartbeat the doctor expects forever and a stage of the pipeline nothing runs. The single checklist is `docs/cron-triggers.md`, "The AI master switch".
+
+**A heartbeat proves a route finished. It does not prove the route had anything to read.** That gap is invisible from every screen, and it was open in production for weeks: `plan_snapshots` held zero rows and `daily_logs` had not gained one since 2026-07-18, because their only writer (`/api/cron/seal-daily`) is on no schedule, while `ml-predict-inventory` and `ml-train-inventory` read "On time" in Mission Control every day. Producer/consumer links are declared as `fedBy` in `src/lib/automation/job-catalog.ts` and guarded by `src/lib/__tests__/job-feeds.test.ts`. **Do not add a scheduled job that reads a table without declaring who writes it.**
 
 ---
 
@@ -179,6 +218,28 @@ These are guards added in the May 2026 multi-tenant scaling work. Don't weaken t
 - **Never compute the month bucket by casting a timestamptz to date.** That resolves in the session timezone and silently shifts the label to the previous month at any negative offset. Use a pure `date` (`v_month`).
 
 **Tested by:** `agent-costs-rollup.test.ts` (the arithmetic, including "a spend total is identical before and after rollup + prune") and `agent-costs-rollup-sql.integration.test.ts` (the real function against Postgres, including both guards).
+
+---
+
+## 10. The admin account switcher's way back is bound to a session, not just a cookie
+
+**What it does:** `POST /api/auth/admin-switch-return` mints a real platform-admin session. It sits outside `/api/admin/*` on purpose (by the time it is called the browser IS the demo person), so it carries its own gate. Two things authorize it and **neither alone is enough**:
+
+1. the httpOnly, HMAC-signed `staxis_admin_return` cookie the switch set, and
+2. a live session belonging to the demo person that same cookie names, resolved through `requireSession` — never from anything the caller can set.
+
+**Why it exists (2026-08-07 security audit):** with only the cookie, the endpoint was a two-hour bearer credential for the platform-admin account that outlived the act it belonged to. An admin who switched into a demo person and then signed out, or handed the machine over, left a browser one unauthenticated POST away from a full admin session — no password, no second factor. Sign-out could not fix it either: `clearSignedOutBrowserState` removes the cosmetic hint cookie, but JavaScript cannot delete an httpOnly one.
+
+### Rules for editing
+
+- **Never let `performAdminReturn` run without a presenter.** `presenterAuthUserId` is required, and it must equal the `authUserId` of the account named by `targetAccountId`. An absent or empty presenter is a refusal, not a wildcard.
+- **Keep the presenter check BEFORE the single-use claim.** Reversed, anyone holding the browser could burn the admin's `jti` without ever being allowed to redeem it, i.e. deny the return by touching it.
+- **Keep the claim BEFORE the admin lookup.** Reversed, two racing redeems could both read "still an admin" and both be served.
+- **Keep `DELETE` on that route, and keep sign-out calling it.** It is the difference between the credential being inert and being absent. Do not move that call into `clearSignedOutBrowserState`: that also runs on hydration paths where a momentary "no session yet" reading would throw away a valid return.
+- **Do not write an `app_events` row for refusals that never got past the HMAC** (`no_return_token`, `token_malformed`, `token_bad_signature`). Anyone can produce those at will, and a row each is an unbounded audit-table write from an unauthenticated endpoint. Everything that DID verify is still recorded.
+- **`properties.is_test` is the only thing standing between this feature and a real hotel.** A real property mistakenly flagged `is_test = true` makes its staff switchable, and the resulting session is indistinguishable from that person working. There is no second, independent check. Treat flipping that flag on a live hotel as a security event.
+
+**Tested by:** `admin-account-switch.test.ts` (the policy, dependency-injected), `admin-switch-return-route.test.ts` (the route actually resolves and passes the caller), and `admin-account-switch.integration.test.ts` (the whole round trip against real migrations, including the cookie tried as a signed-out browser, as another real person, and as the admin).
 
 ---
 

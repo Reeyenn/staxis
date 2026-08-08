@@ -534,6 +534,26 @@ export interface Finding {
   judgedModel: string | null;
   /** True when the prose guard threw model phrasing away for this row. */
   judgedGuardRejected: boolean;
+  // ── the question under the card's replies (migration 0461) ──
+  // Both null on every row until the companion.reply_question pass has run, and
+  // null again on any row whose question broke a copy rule. Null means the
+  // per-kind TEMPLATE question stands, which is a complete card, so nothing
+  // here is load-bearing.
+  /**
+   * One question, already guarded and already slot-rendered. Never a label,
+   * never a destination, never a verdict: the replies under it are built by
+   * code from a closed intent registry (src/lib/companion/replies.ts).
+   */
+  judgedQuestion: string | null;
+  /**
+   * The order to show that card's replies in, as reply ids.
+   *
+   * A permutation of the ids the code built, or null. It is the only structural
+   * thing a model may touch on this surface, and it is the weakest possible
+   * one: reordering three honest answers cannot produce a dishonest card, while
+   * adding or dropping one could.
+   */
+  judgedReplyOrder: string[] | null;
 }
 
 /** What the judge did to one hotel on one night. Mirrors finding_runs (0361). */

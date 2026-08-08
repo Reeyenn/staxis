@@ -7,9 +7,19 @@ export const dynamic = 'force-dynamic';
 //   • Manager (admin / owner / general_manager) → Schedule
 //   • Staff   (housekeeping / front_desk / maintenance / staff) → My Shifts
 //
-// Demo/investor logins (accounts.skip_2fa → user.isDemo) that can manage the
-// team get an extra Manager⇄Staff view switch so the shared test login can
-// preview BOTH surfaces — and, in staff mode, preview as any employee.
+// Demo/investor logins (accounts.skip_2fa → user.isDemo) and platform admins
+// (role 'admin') that can manage the team get an extra Manager⇄Staff view
+// switch so they can preview BOTH surfaces — and, in staff mode, preview as
+// any employee.
+//
+// Admins were added 2026-08-07: the switch had only ever checked isDemo, so the
+// one account that most needs to see what a housekeeper sees — the person who
+// builds the product — was the one account that couldn't. It is a READ-ONLY
+// preview of an existing screen, not an impersonation: no session is assumed,
+// nothing is written as that employee, and it shows only the shifts the
+// employee themselves would see. Deliberately NOT extended to owner/GM: this
+// is a build-and-support tool, and a hotel manager browsing an individual
+// employee's screen is a different question that nobody has asked for.
 //
 // The Directory tab was removed on 2026-07-27. Everyone who works at the hotel
 // — logins and schedule-only people alike — is now ONE list at
@@ -125,11 +135,11 @@ export default function StaffPage() {
   // to My Hotel → People from inside the schedule.
   const canManagePeople = isManager && can('manage_team');
 
-  // Demo login + manager → both UIs, switchable.
-  if (user.isDemo && canManageSchedule) {
+  // Demo login or platform admin, + manager → both UIs, switchable.
+  if ((user.isDemo || user.role === 'admin') && canManageSchedule) {
     return (
 
-        <DemoSwitchableView key={capabilityViewerKey} canManagePeople={canManagePeople} />
+        <PreviewSwitchableView key={capabilityViewerKey} canManagePeople={canManagePeople} />
 
     );
   }
@@ -146,8 +156,8 @@ export default function StaffPage() {
   return <MyShifts/>;
 }
 
-// ── Demo-only Manager ⇄ Staff preview ───────────────────────────────────────
-function DemoSwitchableView({ canManagePeople }: { canManagePeople: boolean }) {
+// ── Manager ⇄ Staff preview (demo logins + platform admins) ─────────────────
+function PreviewSwitchableView({ canManagePeople }: { canManagePeople: boolean }) {
   const { user } = useAuth();
   const [mode, setMode] = useState<'manager' | 'staff'>(() => {
     if (typeof window === 'undefined') return 'manager';
@@ -171,7 +181,8 @@ function DemoSwitchableView({ canManagePeople }: { canManagePeople: boolean }) {
 
   return (
     <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
-      <DemoViewSwitch
+      <PreviewViewSwitch
+        previewLabel={user?.isDemo ? 'Demo preview' : 'Preview'}
         mode={mode}
         onMode={setMode}
         previewStaffId={previewStaffId}
@@ -185,9 +196,10 @@ function DemoSwitchableView({ canManagePeople }: { canManagePeople: boolean }) {
   );
 }
 
-function DemoViewSwitch({
-  mode, onMode, previewStaffId, onPreviewStaff, loginName,
+function PreviewViewSwitch({
+  previewLabel, mode, onMode, previewStaffId, onPreviewStaff, loginName,
 }: {
+  previewLabel: string;
   mode: 'manager' | 'staff';
   onMode: (m: 'manager' | 'staff') => void;
   previewStaffId: string | null;
@@ -229,7 +241,7 @@ function DemoViewSwitch({
       <span style={{
         fontFamily: fonts.mono, fontSize: 9, fontWeight: 700, letterSpacing: '0.12em',
         textTransform: 'uppercase', color: '#8C6A33',
-      }}>Demo preview · {loginName}</span>
+      }}>{previewLabel} · {loginName}</span>
 
       <div style={{
         display: 'inline-flex', gap: 3, background: T.paper,

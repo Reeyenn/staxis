@@ -125,11 +125,13 @@ async function workOrder(opts: {
   equipmentId?: string | null;
   daysAgo?: number;
   room?: string;
+  /** The stored legacy enum. 'closed' is what "Not actually a problem" writes. */
+  status?: 'submitted' | 'assigned' | 'in_progress' | 'deferred' | 'resolved' | 'closed';
 }): Promise<string> {
   const r = await pg.query<{ id: string }>(
     `insert into work_orders (property_id, room_number, description, severity, status,
                               equipment_id, created_at)
-     values ($1,$2,$3,'medium','submitted',$4, now() - make_interval(days => $5))
+     values ($1,$2,$3,'medium',$6,$4, now() - make_interval(days => $5))
      returning id`,
     [
       opts.propertyId,
@@ -137,6 +139,7 @@ async function workOrder(opts: {
       opts.description,
       opts.equipmentId ?? null,
       opts.daysAgo ?? 3,
+      opts.status ?? 'submitted',
     ],
   );
   return r.rows[0].id;
@@ -426,6 +429,30 @@ describe('the equipment list', () => {
       assert.ok(!JSON.stringify(await body(res)).includes(LEAK));
     });
 
+    test("hotel A's manager asking for hotel B's asset under hotel B's OWN id is refused", async () => {
+      // The case the id/pid mismatch above cannot catch: name B's asset AND B's
+      // hotel, and the store's property scoping resolves the row perfectly. Only
+      // a tenant check on the caller stops it, and the detail sheet is the whole
+      // asset — purchase and replacement cost, serial, warranty terms, plus every
+      // linked ticket's description, room and repair cost.
+      const res = await equipmentDetail(
+        get(`/api/maintenance/equipment/${assetB}?pid=${PID_B}`),
+        params(assetB),
+      );
+      assert.equal(res.status, 403);
+      assert.ok(!JSON.stringify(await body(res)).includes(LEAK));
+    });
+
+    test("hotel B's own manager still opens hotel B's asset sheet", async () => {
+      // The guard above must refuse the stranger without also refusing the owner.
+      currentUser = GM_B_UID;
+      const res = await equipmentDetail(
+        get(`/api/maintenance/equipment/${assetB}?pid=${PID_B}`),
+        params(assetB),
+      );
+      assert.equal(res.status, 200);
+    });
+
     test("hotel A cannot edit or delete hotel B's asset by id", async () => {
       const patched = await equipmentPatch(
         send('/api/maintenance/equipment', 'PATCH', { pid: PID_A, name: 'stolen' }),
@@ -477,6 +504,34 @@ describe('the equipment list', () => {
       );
       assert.equal(detail.data!.failureCount, 2);
       assert.deepEqual(detail.data!.history.map((h) => h.detail).sort(), ['214', '227']);
+    });
+
+    test("a ticket closed as not actually a problem stops reading as open work on the asset", async () => {
+      // Two words mean OFF the board: 'resolved' (somebody fixed it) and
+      // 'closed' (somebody looked and there was nothing to fix). This sheet
+      // asked only about 'resolved', so every non issue anybody had ever closed
+      // sat on the asset's history as outstanding work — forever, on the screen
+      // a manager opens to decide whether a machine is worth keeping.
+      const asset = await createAsset(PID_A, { name: 'Pool heater', category: 'pool' });
+      await workOrder({ propertyId: PID_A, description: 'Heater making a noise', equipmentId: asset.id, room: 'Pool', status: 'closed' });
+      await workOrder({ propertyId: PID_A, description: 'Heater pilot out', equipmentId: asset.id, room: 'Pool', status: 'resolved' });
+      await workOrder({ propertyId: PID_A, description: 'Heater leaking', equipmentId: asset.id, room: 'Pool', status: 'submitted' });
+      await workOrder({ propertyId: PID_A, description: 'Heater part on order', equipmentId: asset.id, room: 'Pool', status: 'deferred' });
+
+      const detail = await body<{ history: Array<{ title: string; status: string | null }> }>(
+        await equipmentDetail(
+          get(`/api/maintenance/equipment/${asset.id}?pid=${PID_A}`),
+          params(asset.id!),
+        ),
+      );
+      const byTitle = new Map(detail.data!.history.map((h) => [h.title, h.status]));
+      assert.equal(byTitle.get('Heater making a noise'), 'done', 'a non issue is settled, not outstanding');
+      assert.equal(byTitle.get('Heater pilot out'), 'done');
+      assert.equal(byTitle.get('Heater leaking'), 'open');
+      assert.equal(
+        byTitle.get('Heater part on order'), 'open',
+        'and waiting on parts is still live work, so the guard must not have swept it up too',
+      );
     });
 
     test('a pattern about this asset puts a chip on this asset and no other', async () => {

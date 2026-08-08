@@ -49,7 +49,6 @@ function hotel(id: string, overrides: Partial<Property> = {}): Property {
     name: `Hotel ${id.toUpperCase()}`,
     totalRooms: 80,
     avgOccupancy: 0.72,
-    hourlyWage: 14,
     checkoutMinutes: 30,
     stayoverMinutes: 20,
     prepMinutesPerActivity: 5,

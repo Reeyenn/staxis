@@ -27,8 +27,10 @@
  *      where reasonable.
  *
  * ─── What's checked ──────────────────────────────────────────────────────
- * Slimmed 2026-07-17 (owner's call) to three signals. The live registry is
- * the `checks` array below — THIS list must match it. The 7 checks that run:
+ * Slimmed 2026-07-17 (owner's call) to three signals, then grown back as
+ * specific silent failures earned a place. The live registry is the `checks`
+ * array below — THIS list must match it, and the count in this sentence is the
+ * first thing to go stale (it said 7 while 19 were running). The checks:
  *
  *   env_vars                    — every required env var is present + non-empty
  *   supabase_admin_auth         — preflight read using the service_role key
@@ -81,6 +83,10 @@ import {
 } from '@/lib/agent/eval-bank-health';
 import { env } from '@/lib/env';
 import { SUPERSEDED_MIGRATIONS } from '@/lib/migration-policy';
+// PostgREST caps every response at 1000 rows here, whatever .limit() asks for.
+// A health check that reads past that cap without paging stops being a health
+// check. See src/lib/supabase-paginate.ts.
+import { fetchAllRows } from '@/lib/supabase-paginate';
 import { evaluatePromptTierHealth, evaluatePromptToolRouting } from '@/lib/agent/prompt-tiers';
 // The live tool catalog, for `agent_prompt_tool_names`. The index import is the
 // registration side-effect — without it `listAllTools()` is empty and the check
@@ -525,7 +531,6 @@ const RLS_REQUIRED_TABLES = [
   'agent_messages',
   'agent_costs',
   'agent_nudges',
-  'walkthrough_runs',
 
   // Fleet-wide AI Control Center (service-role only).
   'ai_model_catalog',
@@ -878,12 +883,33 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // One row per nightly robot walkthrough of the live app, so a green night
   // is distinguishable from a night the robot never ran.
   '0460',
+  // The question under a companion card: judged_question + judged_reply_order
+  // on findings, both nullable, both meaning "use the template" when absent.
+  '0461',
   // "Skip this one" on an upkeep schedule: one occurrence put down without
   // anybody claiming the work happened (preventive_tasks.skipped_at/by).
   '0462',
   // Integer-cents mirrors of the legacy dollar money columns, derived by
   // Postgres so the cents and dollars views of a number cannot drift apart.
   '0463',
+  // Company hats carry which hotels they cover, and the company vocabulary
+  // becomes Owner + Regional Manager.
+  '0464',
+  // Audit trigger stops naming the 0463 generated cents mirrors in
+  // changedFields; item history shows one entry per real edit again.
+  '0465',
+  // The companion's daily wake counter is incremented by the database inside
+  // the row lock, so two overlapping sweeps cannot write a stale count back.
+  '0466',
+  // A company hat's hotel list is validated at every guarded write, an
+  // explicit-list invitation can actually be accepted, and a hat naming some
+  // hotels no longer reads as the whole company.
+  '0467',
+  // Coverage never empties: detaching a person from their last hotel, and
+  // deleting a hotel, end the job instead of leaving it naming zero hotels;
+  // and a job naming some hotels can no longer manage every grouping or hand
+  // out whole-company access.
+  '0468',
 ];
 
 /**
@@ -946,11 +972,39 @@ export const ALLOWED_EXTRA_APPLIED_MIGRATIONS: ReadonlySet<string> = new Set([
   '0279',
 ]);
 
-async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+/**
+ * THE ROW CAP IS WHY THIS PAGES.
+ *
+ * PostgREST on this project caps EVERY response at 1000 rows no matter what
+ * `.limit()` asks for (`src/lib/supabase-paginate.ts`, re-verified against prod
+ * 2026-08-07: `limit=5000` returned exactly 1000). A single-shot read of
+ * `applied_migrations` therefore stops being the truth the moment the project
+ * passes its thousandth migration, and it does not fail quietly: every version
+ * past the cap reads as NOT applied, so this check flips to `fail`, the doctor
+ * returns 503, and the post-deploy smoke gate blocks every deploy while the
+ * database is perfectly healthy. At 387 migrations that is not far off, and it
+ * would arrive on an ordinary Tuesday with no change to blame.
+ *
+ * The `client` parameter is for tests only, and exists for the same reason
+ * `writeCronHeartbeat`'s does: ESM bindings cannot be monkey-patched from the
+ * consumer's side. Production always takes the default.
+ */
+export async function checkAppliedMigrations(
+  client: Pick<typeof supabaseAdmin, 'from'> = supabaseAdmin,
+): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('applied_migrations')
-      .select('version');
+    const read = await fetchAllRows<{ version: string }>((from, to) => (
+      client
+        .from('applied_migrations')
+        .select('version')
+        .order('version', { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{ data: { version: string }[] | null; error: unknown }>
+    )).then(
+      (rows) => ({ rows, error: null as unknown }),
+      (e: unknown) => ({ rows: null, error: e }),
+    );
+    const data = read.rows;
+    const error = read.error;
     if (error) {
       // Table doesn't exist yet — 0015 hasn't been applied to this project.
       // Warn rather than fail so existing prod deployments without 0015
@@ -1185,8 +1239,109 @@ async function checkFindingsSpendStaleHolds(): Promise<Omit<Check, 'name' | 'dur
  * WARN, never fail. Nothing here is broken for a manager, and a check that
  * could 503 the deploy gate over a background watcher would be its own outage.
  */
+export const COMPANION_WAKE_STALE_MINUTES = 30;
+
+export interface CompanionWakeInputs {
+  /** Hotels whose cursor has not moved inside the staleness window. */
+  staleCount: number;
+  /** The last heartbeat's `notes`, exactly as the route wrote them. */
+  notes: Record<string, unknown>;
+  /** True when the heartbeat row could not be read at all. */
+  heartbeatUnreadable?: boolean;
+}
+
+/**
+ * The judgement, separated from the two queries so it can be exercised.
+ *
+ * ─── WHY IT MOVED OUT OF THE CHECK ─────────────────────────────────────────
+ *
+ * Because it was wrong in the one case that matters most and nothing could
+ * say so. `docs/cron-triggers.md` tells the founder that switching this
+ * feature off in the AI Control Center "is the supported way to stop it".
+ * Doing exactly that makes `sweepAllProperties` return before it reads a
+ * single hotel, so no cursor advances, so within thirty minutes this check
+ * warned that "the ten-minute sweep is not advancing cursors" and told him to
+ * go and read the logs of a job he had deliberately turned off. It then said
+ * that every five minutes, forever. The supported action produced a permanent
+ * false alarm, which is the fastest way to teach somebody that amber means
+ * nothing.
+ *
+ * The route already recorded the truth: it writes `switchedOff` into the
+ * heartbeat notes on exactly that path. The check simply never looked at it,
+ * and it never looked at whether the heartbeat read had FAILED either, so an
+ * unreadable heartbeat row silently became "all counters are zero", which
+ * reads as health.
+ */
+export function companionEventWakeVerdict(
+  input: CompanionWakeInputs,
+): Omit<Check, 'name' | 'durationMs'> {
+  const notes = input.notes ?? {};
+  const num = (key: string): number => {
+    const value = Number(notes[key]);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
+  const spendCap = num('spendCap');
+  const spendUnavailable = num('spendUnavailable');
+  const dailyWakeCap = num('dailyWakeCap');
+  const noCursor = num('noCursor') + num('readFailed');
+  const listSwitchedOff = num('listSwitchedOff');
+  const staleCount = Math.max(0, input.staleCount);
+
+  // THE OFF SWITCH, FIRST. A feature somebody turned off is not a feature that
+  // broke, and stale cursors are the expected and only possible consequence of
+  // turning this one off. Reported plainly rather than silently, because a
+  // watcher that is not watching is worth one calm line either way.
+  if (notes.switchedOff === true) {
+    return {
+      status: 'ok',
+      detail: 'the companion event sweep is switched off in the AI Control Center, '
+        + `so no hotel is being looked at (${staleCount} cursor(s) standing still)`,
+    };
+  }
+
+  const problems: string[] = [];
+  if (input.heartbeatUnreadable === true) {
+    // Not folded into "healthy". Without the heartbeat the counters below are
+    // all zero, and zero is what a perfect night looks like.
+    problems.push('the last run\'s record could not be read, so the counters below are blank');
+  }
+  if (staleCount > 0) {
+    problems.push(`${staleCount} hotel(s) not looked at in over ${COMPANION_WAKE_STALE_MINUTES} min`);
+  }
+  if (noCursor > 0) problems.push(`${noCursor} hotel(s) skipped on a failed read`);
+  if (spendUnavailable > 0) problems.push(`${spendUnavailable} hotel(s) could not read the spend cap`);
+  if (spendCap > 0) problems.push(`${spendCap} hotel(s) silenced by the daily spend cap`);
+
+  if (problems.length === 0) {
+    // Said out loud rather than folded into "healthy". Both of these are the
+    // system working as designed, and both are things an operator would
+    // otherwise have to read the heartbeat notes by hand to discover: a hotel
+    // at its wake limit, and a hotel that has switched off the list a note
+    // would arrive on and will therefore never get one.
+    const asides = [
+      dailyWakeCap > 0 ? `${dailyWakeCap} hotel(s) at today's wake limit` : '',
+      listSwitchedOff > 0 ? `${listSwitchedOff} hotel(s) have the Staxis list switched off` : '',
+    ].filter(Boolean);
+    return {
+      status: 'ok',
+      detail: asides.length > 0
+        ? `companion event sweep healthy; ${asides.join('; ')}`
+        : 'companion event sweep healthy',
+    };
+  }
+  return {
+    status: 'warn',
+    detail: `companion event sweep: ${problems.join('; ')}`,
+    fix: staleCount > 0 || noCursor > 0
+      ? 'The ten-minute sweep is not advancing cursors. Confirm the feature is still '
+        + 'switched ON in the AI Control Center, then check /api/cron/companion-event-wake '
+        + 'logs and that migration 0459 is applied.'
+      : 'A hotel is hitting its per-day AI ceiling for event notices. Check findings_ai_spend for feature companion.event_wake.',
+  };
+}
+
 async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const STALE_MINUTES = 30;
+  const STALE_MINUTES = COMPANION_WAKE_STALE_MINUTES;
   try {
     const staleCutoff = new Date(Date.now() - STALE_MINUTES * 60_000).toISOString();
     const [stale, heartbeat] = await Promise.all([
@@ -1216,51 +1371,19 @@ async function checkCompanionEventWakeHealth(): Promise<Omit<Check, 'name' | 'du
       };
     }
 
+    // The heartbeat read is allowed to fail; it is not allowed to fail QUIETLY.
+    // Its notes are the only place the per-hotel counters live, so an
+    // unreadable row used to present as "every counter is zero", which is
+    // exactly what a perfect ten minutes looks like.
+    const heartbeatUnreadable = Boolean(heartbeat.error);
     const notes = (((heartbeat.data ?? []) as Array<{ notes?: unknown }>)[0]?.notes ?? {}) as
       Record<string, unknown>;
-    const num = (key: string): number => {
-      const value = Number(notes[key]);
-      return Number.isFinite(value) && value > 0 ? value : 0;
-    };
-    const spendCap = num('spendCap');
-    const spendUnavailable = num('spendUnavailable');
-    const dailyWakeCap = num('dailyWakeCap');
-    const noCursor = num('noCursor') + num('readFailed');
-    const listSwitchedOff = num('listSwitchedOff');
-    const staleCount = stale.count ?? 0;
 
-    const problems: string[] = [];
-    if (staleCount > 0) {
-      problems.push(`${staleCount} hotel(s) not looked at in over ${STALE_MINUTES} min`);
-    }
-    if (noCursor > 0) problems.push(`${noCursor} hotel(s) skipped on a failed read`);
-    if (spendUnavailable > 0) problems.push(`${spendUnavailable} hotel(s) could not read the spend cap`);
-    if (spendCap > 0) problems.push(`${spendCap} hotel(s) silenced by the daily spend cap`);
-
-    if (problems.length === 0) {
-      // Said out loud rather than folded into "healthy". Both of these are the
-      // system working as designed, and both are things an operator would
-      // otherwise have to read the heartbeat notes by hand to discover: a hotel
-      // at its wake limit, and a hotel that has switched off the list a note
-      // would arrive on and will therefore never get one.
-      const notes = [
-        dailyWakeCap > 0 ? `${dailyWakeCap} hotel(s) at today's wake limit` : '',
-        listSwitchedOff > 0 ? `${listSwitchedOff} hotel(s) have the Staxis list switched off` : '',
-      ].filter(Boolean);
-      return {
-        status: 'ok',
-        detail: notes.length > 0
-          ? `companion event sweep healthy; ${notes.join('; ')}`
-          : 'companion event sweep healthy',
-      };
-    }
-    return {
-      status: 'warn',
-      detail: `companion event sweep: ${problems.join('; ')}`,
-      fix: staleCount > 0 || noCursor > 0
-        ? 'The ten-minute sweep is not advancing cursors. Check /api/cron/companion-event-wake logs and that migration 0459 is applied.'
-        : 'A hotel is hitting its per-day AI ceiling for event notices. Check findings_ai_spend for feature companion.event_wake.',
-    };
+    return companionEventWakeVerdict({
+      staleCount: stale.count ?? 0,
+      notes,
+      heartbeatUnreadable,
+    });
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };
   }
@@ -1625,13 +1748,27 @@ function isMissingRelation(error: unknown): boolean {
  */
 async function checkPmsReportFreshness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('pms_feed_health_v1')
-      .select(
-        'property_id, feed_key, label, required, enabled, grace_minutes, alert_channel, ' +
-          'last_report_at, last_delivery_at, last_signal_at, minutes_late, ' +
-          'open_quarantine_count, open_unmapped_count, state',
-      );
+    // PAGED, because this is five rows per hotel: a single-shot read stops
+    // seeing the tail of the fleet at 200 hotels and says nothing about it, so
+    // the hotels whose reports stopped arriving would be exactly the ones this
+    // check no longer looks at.
+    const read = await fetchAllRows<Record<string, unknown>>((from, to) => (
+      supabaseAdmin
+        .from('pms_feed_health_v1')
+        .select(
+          'property_id, feed_key, label, required, enabled, grace_minutes, alert_channel, ' +
+            'last_report_at, last_delivery_at, last_signal_at, minutes_late, ' +
+            'open_quarantine_count, open_unmapped_count, state',
+        )
+        .order('property_id', { ascending: true })
+        .order('feed_key', { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{ data: Record<string, unknown>[] | null; error: unknown }>
+    )).then(
+      (rows) => ({ rows, error: null as unknown }),
+      (e: unknown) => ({ rows: null, error: e }),
+    );
+    const data = read.rows;
+    const error = read.error;
     if (error) {
       if (isMissingRelation(error)) {
         return { status: 'ok', detail: 'report-freshness tables not applied yet (migration 0339)' };

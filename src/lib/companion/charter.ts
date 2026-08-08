@@ -97,5 +97,52 @@ export const COMPANION_DECLINES_BEFORE_DROP = 2;
  * accumulated one row per finding forever would grow a preference blob without
  * a bound. Oldest topics fall off first; a dropped topic outranks a live one
  * because forgetting a No is the failure that actually annoys people.
+ *
+ * A COUNT IS NOT THE REAL LIMIT. See COMPANION_MEMORY_MAX_BYTES: the column has
+ * a size CHECK on it and sixty topics does not fit inside that check when the
+ * keys are long. This number is the cheap upper bound on how many things one
+ * person is worth remembering; the byte budget below is the one that keeps the
+ * write from being refused.
  */
 export const COMPANION_MEMORY_TOPIC_CAP = 60;
+
+// ─── The size of the ledger, in the units the database actually measures ────
+//
+// `staxis_user_prefs.companion_memory` carries
+// `CHECK (pg_column_size(companion_memory) <= 8192)` (migration 0417). Past it
+// the UPSERT is REFUSED, and the refusal is the dangerous kind rather than a
+// loud one: POST /api/companion 500s, the browser keeps its optimistic memory
+// for the rest of the page load, and `rememberSpoke` silently stops persisting.
+// The daily speech cap and the never-nag ledger are both stored state, so both
+// stop being enforced across page loads while the bubble looks fine.
+//
+// So the ledger bounds ITSELF, in bytes, against that number. The topic count
+// above is kept as a second and cheaper ceiling; this is the one that has to
+// hold.
+
+/**
+ * Byte budget for the whole serialized memory blob.
+ *
+ * 6 KB against an 8 KB column check, and the 2 KB of headroom is not timidity:
+ * `pg_column_size` measures the jsonb BINARY representation, which carries a
+ * per-key header and can run larger than the JSON text we measure here. The
+ * gap is the margin between what this code can count and what Postgres will
+ * count. Raise the column check first if this ever needs to grow.
+ */
+export const COMPANION_MEMORY_MAX_BYTES = 6_144;
+
+/**
+ * Held back from the budget for everything that is NOT a topic.
+ *
+ * The welcome stamp, the tour stamps, both notices cursors, the speech counters
+ * and the taught map. These are the fields that ENFORCE the limits, so they are
+ * never the thing that gets evicted: a memory that dropped `spokenCount` to make
+ * room for a topic would have thrown away the daily cap to remember an
+ * interruption. A fully populated set of them is around 700 bytes; this is
+ * rounded up so a future field does not silently eat into the same margin.
+ */
+export const COMPANION_MEMORY_FIXED_RESERVE_BYTES = 1_024;
+
+/** What the topics map itself may weigh, serialized. */
+export const COMPANION_MEMORY_TOPICS_MAX_BYTES =
+  COMPANION_MEMORY_MAX_BYTES - COMPANION_MEMORY_FIXED_RESERVE_BYTES;

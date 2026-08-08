@@ -21,15 +21,18 @@ process.env.CRON_SECRET ??= 'placeholder-cron-secret-min-16';
 process.env.ANTHROPIC_API_KEY ??= 'sk-ant-placeholder';
 
 import assert from 'node:assert/strict';
-import { describe, test } from 'node:test';
+import { afterEach, describe, test } from 'node:test';
 
 import type { MessagesClient, UsageReport } from '@/lib/agent/llm';
 import { AGENT_JOURNAL_SOURCE, journalNoticedLine, journalObservedLine } from '@/lib/agent/journal';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
   INTERESTING_EVENT_TYPES,
+  MAX_EVENTS_PER_WAKE,
   MAX_LOOKBACK_MINUTES,
   MAX_WAKES_PER_DAY,
   decideWake,
+  disabledEventCategories,
   isInterestingEvent,
   keepEnabledSections,
   wakeTopicFor,
@@ -38,12 +41,15 @@ import {
 } from '@/lib/companion/event-wake/events';
 import {
   MAX_NOTICE_CHARS,
+  MAX_WAKE_OUTPUT_TOKENS,
   WAKE_RESERVATION_USD,
   askWhatToPrepare,
   parseWakeReplyStrict,
   wakeReceipt,
   type WakeCallDeps,
 } from '@/lib/companion/event-wake/notice';
+import { recordWake } from '@/lib/companion/event-wake/state';
+import { sweepProperty } from '@/lib/companion/event-wake/runner';
 import { checkProse } from '@/lib/findings/prose-guard';
 import { FEATURE_CAP_SHARE, featureCapUsd } from '@/lib/findings/judge-budget';
 
@@ -68,17 +74,22 @@ function event(over: Partial<WakeEventRow> = {}): WakeEventRow {
 interface Recorder {
   client: MessagesClient;
   calls: number;
+  /** Every request body the provider was actually handed. The hold is priced
+   *  against `max_tokens`, so what was asked for has to be checkable. */
+  bodies: Array<{ max_tokens?: number }>;
 }
 
 /** A scripted model. Replies are returned in order; a function throws. */
 function scriptedModel(replies: Array<string | (() => never)>): Recorder {
   const rec: Recorder = {
     calls: 0,
+    bodies: [],
     client: {
       messages: {
-        create: async () => {
+        create: async (body: { max_tokens?: number }) => {
           const reply = replies[Math.min(rec.calls, replies.length - 1)];
           rec.calls += 1;
+          rec.bodies.push(body ?? {});
           if (typeof reply === 'function') reply();
           return {
             id: 'msg_test',
@@ -524,6 +535,345 @@ describe('the lines it writes about itself', () => {
       journalObservedLine({ summary: 'X.' }),
     );
     assert.match(journalNoticedLine({ summary: 'X.' }), /mention/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The window read, the wake counter, and what the call is allowed to cost
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// These three need a database, which is why they arrive with a stub rather than
+// as pure calls. The stub HONOURS the filters, the ordering and the limit,
+// because the bug in each case is a query that reads the wrong rows and the
+// only way to catch that is to make something behave like Postgres.
+
+interface RecordedQuery {
+  table: string;
+  op: 'select' | 'update' | 'insert' | 'upsert' | 'delete';
+  filters: Array<{ op: string; column: string; value: unknown }>;
+  order: Array<{ column: string; ascending: boolean }>;
+  limit: number | null;
+  values?: unknown;
+}
+
+interface RecordedRpc { fn: string; args: Record<string, unknown> }
+
+interface DbStub {
+  queries: RecordedQuery[];
+  rpcs: RecordedRpc[];
+}
+
+const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
+const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+
+function matches(row: Record<string, unknown>, f: RecordedQuery['filters'][number]): boolean {
+  const cell = row[f.column];
+  switch (f.op) {
+    case 'eq': return cell === f.value;
+    case 'neq': return cell !== f.value;
+    case 'in': return Array.isArray(f.value) && f.value.includes(cell);
+    case 'gt': return String(cell) > String(f.value);
+    case 'gte': return String(cell) >= String(f.value);
+    case 'lt': return String(cell) < String(f.value);
+    case 'lte': return String(cell) <= String(f.value);
+    default: return true;
+  }
+}
+
+function installDb(config: {
+  /** Rows a SELECT on this table may return, before filters are applied. */
+  rows?: Record<string, Array<Record<string, unknown>>>;
+  /** Rows an UPDATE ... .select() hands back. A claim needs one. */
+  updateReturns?: Record<string, Array<Record<string, unknown>>>;
+  rpc?: (fn: string, args: Record<string, unknown>) => { data: unknown; error: unknown };
+}): DbStub {
+  const stub: DbStub = { queries: [], rpcs: [] };
+
+  const chainFor = (query: RecordedQuery) => {
+    const settle = () => {
+      if (query.op !== 'select') {
+        return { data: config.updateReturns?.[query.table] ?? [], error: null };
+      }
+      let rows = (config.rows?.[query.table] ?? []).filter(
+        (row) => query.filters.every((f) => matches(row, f)),
+      );
+      for (const o of [...query.order].reverse()) {
+        rows = [...rows].sort((a, b) => {
+          const left = String(a[o.column] ?? '');
+          const right = String(b[o.column] ?? '');
+          return o.ascending ? left.localeCompare(right) : right.localeCompare(left);
+        });
+      }
+      if (query.limit !== null) rows = rows.slice(0, query.limit);
+      return { data: rows, error: null };
+    };
+
+    const push = (op: string) => (column: string, value: unknown) => {
+      query.filters.push({ op, column, value });
+      return chain;
+    };
+    const chain: Record<string, unknown> = {
+      select: () => chain,
+      eq: push('eq'),
+      neq: push('neq'),
+      gt: push('gt'),
+      gte: push('gte'),
+      lt: push('lt'),
+      lte: push('lte'),
+      in: push('in'),
+      is: push('is'),
+      order: (column: string, opts?: { ascending?: boolean }) => {
+        query.order.push({ column, ascending: opts?.ascending !== false });
+        return chain;
+      },
+      limit: (n: number) => { query.limit = n; return chain; },
+      maybeSingle: async () => {
+        const settled = settle();
+        return { data: (settled.data as unknown[])[0] ?? null, error: settled.error };
+      },
+      single: async () => {
+        const settled = settle();
+        return { data: (settled.data as unknown[])[0] ?? null, error: settled.error };
+      },
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+        Promise.resolve(settle()).then(resolve, reject),
+    };
+    return chain;
+  };
+
+  const start = (table: string, op: RecordedQuery['op'], values?: unknown) => {
+    const query: RecordedQuery = { table, op, filters: [], order: [], limit: null, values };
+    stub.queries.push(query);
+    return chainFor(query);
+  };
+
+  // @ts-expect-error monkey-patch the singleton for the test
+  supabaseAdmin.from = (table: string) => ({
+    select: () => start(table, 'select'),
+    update: (values: unknown) => start(table, 'update', values),
+    insert: (values: unknown) => start(table, 'insert', values),
+    upsert: (values: unknown) => start(table, 'upsert', values),
+    delete: () => start(table, 'delete'),
+  });
+  // @ts-expect-error monkey-patch the singleton for the test
+  supabaseAdmin.rpc = async (fn: string, args: Record<string, unknown>) => {
+    stub.rpcs.push({ fn, args });
+    return config.rpc ? config.rpc(fn, args) : { data: null, error: null };
+  };
+
+  return stub;
+}
+
+afterEach(() => {
+  supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
+});
+
+const NOW = new Date('2026-08-07T15:00:00.000Z');
+const CURSOR = '2026-08-07T14:50:00.000Z';
+
+function logRow(over: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    property_id: PID,
+    occurred_at: '2026-08-07T14:55:00.000Z',
+    event_category: 'maintenance',
+    event_type: 'work_order_created',
+    source: 'pms_sync',
+    description: 'Work order created on Room 214, other (priority medium)',
+    target_type: 'work_order',
+    target_label: 'Room 214',
+    metadata: {},
+    ...over,
+  };
+}
+
+/** A hotel with a cursor, one look already on the clock, and no wakes today. */
+function cursorRow(): Record<string, unknown> {
+  return {
+    property_id: PID,
+    last_looked_at: CURSOR,
+    last_woke_at: null,
+    wakes_day: null,
+    wakes_today: 0,
+    looks_total: 3,
+    wakes_total: 0,
+  };
+}
+
+describe('the window read', () => {
+  test('a hotel with a department switched off still sees the work order underneath it', async () => {
+    // THE PRODUCTION SHAPE. Housekeeping is off. The ten minutes hold forty
+    // failed inspections and one new work order. Read oldest-first with a limit
+    // of forty, the forty housekeeping rows filled the whole read, the section
+    // filter then dropped every one of them, the hotel read as quiet, the
+    // cursor advanced anyway, and that work order was never seen again.
+    const events: Array<Record<string, unknown>> = [];
+    for (let i = 0; i < MAX_EVENTS_PER_WAKE; i += 1) {
+      events.push(logRow({
+        event_category: 'housekeeping',
+        event_type: 'inspection_fail',
+        // Older than the work order, so oldest-first would take all of them,
+        // and inside the window, which opens strictly after the cursor.
+        occurred_at: `2026-08-07T14:5${Math.floor(i / 10) + 1}:${String(i % 10).padStart(2, '0')}.000Z`,
+        description: `Room ${100 + i} failed inspection`,
+      }));
+    }
+    events.push(logRow({ occurred_at: '2026-08-07T14:59:59.000Z' }));
+
+    const db = installDb({
+      rows: {
+        companion_event_wake_state: [cursorRow()],
+        properties: [{ id: PID, enabled_sections: { housekeeping: false } }],
+        activity_log: events,
+        findings: [],
+      },
+      updateReturns: { companion_event_wake_state: [{ property_id: PID }] },
+      // No spend hold, so the sweep stops before the model. Everything this
+      // test is about has already happened by then.
+      rpc: (fn) => (fn === 'staxis_reserve_findings_spend'
+        ? { data: null, error: { message: 'stub: no reservation here' } }
+        : { data: 1, error: null }),
+    });
+
+    const result = await sweepProperty({ id: PID, timezone: 'America/Chicago' }, { now: NOW });
+
+    assert.equal(result.events, 1, 'the work order must survive a window full of switched-off rows');
+    assert.notEqual(result.outcome, 'quiet', 'a hotel with a new work order in it is not quiet');
+
+    const windowRead = db.queries.find(
+      (q) => q.table === 'activity_log' && q.filters.some((f) => f.op === 'in' && f.column === 'event_type'),
+    );
+    assert.ok(windowRead, 'the window read happened');
+    assert.ok(
+      windowRead!.filters.some((f) => f.op === 'neq' && f.column === 'event_category' && f.value === 'housekeeping'),
+      'the switched-off department has to be excluded by the query, not after the limit',
+    );
+    assert.deepEqual(
+      windowRead!.order,
+      [{ column: 'occurred_at', ascending: false }],
+      'a burst must lose its OLDEST rows, not its newest',
+    );
+    assert.equal(windowRead!.limit, MAX_EVENTS_PER_WAKE);
+  });
+
+  test('a hotel with nothing switched off excludes nothing', () => {
+    assert.deepEqual(disabledEventCategories(null), []);
+    assert.deepEqual(disabledEventCategories({}), []);
+    assert.deepEqual(disabledEventCategories({ housekeeping: true }), []);
+  });
+
+  test('only mapped categories are ever named, so a new one is not silently dropped', () => {
+    // `keepEnabledSections` treats an unmapped category as ungated. The query
+    // form has to agree, or the two halves of one rule disagree.
+    assert.deepEqual(
+      disabledEventCategories({ housekeeping: false, maintenance: false, staff: false }),
+      ['housekeeping', 'maintenance', 'staff'],
+    );
+    assert.deepEqual(disabledEventCategories({ inventory: false, financials: false }), []);
+  });
+});
+
+describe('the wake counter', () => {
+  test('it is counted by the database, not by adding one to a number we read', async () => {
+    // Two overlapping sweeps both read the same prior and both wrote it back,
+    // so two wakes counted as one and MAX_WAKES_PER_DAY stopped biting.
+    const db = installDb({ rpc: () => ({ data: 4, error: null }) });
+    await recordWake({
+      propertyId: PID,
+      wakesDayNow: '2026-08-07',
+      priorWakesDay: '2026-08-07',
+      priorWakesToday: 3,
+      priorWakesTotal: 11,
+      now: NOW,
+    });
+    assert.deepEqual(db.rpcs.map((r) => r.fn), ['staxis_companion_record_wake']);
+    assert.deepEqual(db.rpcs[0].args, {
+      p_property_id: PID,
+      p_wakes_day: '2026-08-07',
+      p_now: NOW.toISOString(),
+    });
+    assert.equal(
+      db.queries.filter((q) => q.table === 'companion_event_wake_state').length,
+      0,
+      'the old read-modify-write must not run as well',
+    );
+  });
+
+  test('until migration 0466 is applied it counts the old way rather than not at all', async () => {
+    const db = installDb({
+      rpc: () => ({ data: null, error: { code: 'PGRST202', message: 'Could not find the function' } }),
+    });
+    await recordWake({
+      propertyId: PID,
+      wakesDayNow: '2026-08-07',
+      priorWakesDay: '2026-08-07',
+      priorWakesToday: 3,
+      priorWakesTotal: 11,
+      now: NOW,
+    });
+    const update = db.queries.find((q) => q.table === 'companion_event_wake_state' && q.op === 'update');
+    assert.ok(update, 'the fallback write has to happen while the migration is pending');
+    assert.deepEqual(
+      (update!.values as Record<string, unknown>).wakes_today,
+      4,
+      'and it has to keep counting',
+    );
+  });
+
+  test('a real write failure is not mistaken for a missing migration', async () => {
+    const db = installDb({
+      rpc: () => ({ data: null, error: { code: '40001', message: 'serialization failure' } }),
+    });
+    await recordWake({
+      propertyId: PID,
+      wakesDayNow: '2026-08-07',
+      priorWakesDay: null,
+      priorWakesToday: 0,
+      priorWakesTotal: 0,
+      now: NOW,
+    });
+    assert.equal(
+      db.queries.filter((q) => q.table === 'companion_event_wake_state').length,
+      0,
+      'a failed atomic write must not be retried as a racy one',
+    );
+  });
+});
+
+describe('the size of the hold', () => {
+  test('the call asks for the short reply the hold is priced for', async () => {
+    // The hold used to be priced at the runtime's own 8,192-token ceiling for a
+    // reply of about eighty tokens. A smaller hold is only honest if the
+    // request is smaller too, so this is the line that makes it true.
+    const model = scriptedModel(['{"do":"nothing","say":"","why":"ordinary"}']);
+    const { deps } = spendDeps(allowingSpend);
+    await askWhatToPrepare({
+      propertyId: PID, events: [event()], alreadyKnown: [], journalLines: [],
+      deps, modelClient: model.client,
+    });
+    assert.equal(model.calls, 1);
+    assert.equal(model.bodies[0].max_tokens, MAX_WAKE_OUTPUT_TOKENS);
+  });
+
+  test('the reply it actually needs fits comfortably inside that ceiling', () => {
+    // MAX_NOTICE_CHARS plus a 200-character `why` plus the JSON around them, at
+    // the pessimistic two characters per token.
+    const worstCaseTokens = (MAX_NOTICE_CHARS + 200 + 60) / 2;
+    assert.ok(
+      worstCaseTokens < MAX_WAKE_OUTPUT_TOKENS,
+      `the longest legal reply is about ${worstCaseTokens} tokens and the ceiling is ${MAX_WAKE_OUTPUT_TOKENS}`,
+    );
+  });
+
+  test('a day holds several looks, not two', () => {
+    // At the old $0.09 hold against a $0.25 feature ceiling only two
+    // unreconciled holds fitted, so one run dying mid-call could refuse the
+    // next quarter of an hour over money nobody spent.
+    const cap = featureCapUsd('companion.event_wake');
+    assert.ok(
+      cap / WAKE_RESERVATION_USD >= 5,
+      `only ${(cap / WAKE_RESERVATION_USD).toFixed(1)} holds fit inside the daily ceiling`,
+    );
   });
 });
 

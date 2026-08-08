@@ -43,7 +43,6 @@ import { clearHotelIdentityCache } from '@/lib/agent/hotel-identity';
 import { clearCompanyRulebookCache } from '@/lib/agent/company-tier';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { buildPortfolioSystemPrompt } from '@/lib/agent/portfolio/prompt';
-import { buildSystemPrompt as buildWalkthroughPrompt } from '@/lib/walkthrough-step';
 import {
   CODE_OWNED_RULE_TIERS,
   exactHotelScope,
@@ -165,19 +164,10 @@ function hotelChatPrompt(): Promise<SystemPromptBlocks> {
   });
 }
 
-function walkthroughPrompt(): Promise<SystemPromptBlocks> {
-  return buildWalkthroughPrompt({
-    role: 'general_manager',
-    task: 'help me add a housekeeper',
-    propertyId: PID_ONE,
-    hotelContext: '<staxis-snapshot trust="system">Rooms: 88 total</staxis-snapshot>',
-  });
-}
-
 function portfolioPrompt(identity = IDENTITY_ONE_HOTEL): Promise<SystemPromptBlocks> {
   return buildPortfolioSystemPrompt({
     identity,
-    companyRole: 'vp',
+    companyRole: 'regional_manager',
     conversationId: 'conv-portfolio-shared-tiers',
     companyKnowledgeMode: 'external_overlay',
     now: NOW,
@@ -186,7 +176,6 @@ function portfolioPrompt(identity = IDENTITY_ONE_HOTEL): Promise<SystemPromptBlo
 
 const PIPELINES: Array<{ name: string; build: () => Promise<SystemPromptBlocks> }> = [
   { name: 'hotel chat', build: hotelChatPrompt },
-  { name: 'walkthrough', build: walkthroughPrompt },
   { name: 'portfolio chat', build: () => portfolioPrompt() },
 ];
 
@@ -243,16 +232,6 @@ describe("the hotel's standing rules follow hotel scope", () => {
     assert.ok(built.stableStamp.includes(HOTEL_RULES_VERSION));
   });
 
-  test('the walkthrough carries them — it did not before', async () => {
-    // The walkthrough drives a manager around their own hotel. "Always check
-    // with me before promising a late checkout" is exactly the kind of rule it
-    // needs, and it had no access to any of them.
-    const built = await walkthroughPrompt();
-    assert.match(built.stable, new RegExp(HOTEL_RULES_HEADER));
-    assert.ok(built.stable.includes(THE_RULE));
-    assert.ok(built.stableStamp.includes(HOTEL_RULES_VERSION));
-  });
-
   test('a one-hotel portfolio turn carries them', async () => {
     const built = await portfolioPrompt(IDENTITY_ONE_HOTEL);
     assert.ok(built.stable.includes(THE_RULE));
@@ -295,7 +274,6 @@ describe('no pipeline can be added without the rulebook', () => {
     'src/lib/agent/prompts.ts',                          // hotel chat
     'src/lib/agent/portfolio/prompt.ts',                 // portfolio chat
     'src/lib/agent/portfolio-intelligence/prompt.ts',    // portfolio chat, evidence layer
-    'src/lib/walkthrough-step.ts',                       // walkthrough
   ].sort();
 
   const PRODUCES = /\)\s*:\s*(?:Promise<)?SystemPromptBlocks/;
@@ -324,10 +302,16 @@ describe('no pipeline can be added without the rulebook', () => {
   });
 
   test('the known producers really are the ones this file exercises', () => {
-    // Keeps the two halves honest: three pipelines are built above, and the
-    // fourth known producer is the portfolio evidence layer, which delegates to
+    // Keeps the two halves honest: two pipelines are built above, and the third
+    // known producer is the portfolio evidence layer, which delegates to
     // portfolio/prompt.ts rather than assembling a stable block of its own.
-    assert.equal(PIPELINES.length, 3);
-    assert.equal(KNOWN_PRODUCERS.length, 4);
+    //
+    // Three and four until 2026-08-07. The walkthrough was the third pipeline
+    // and walkthrough-step.ts the fourth producer; both went with the cursor
+    // demo. Nothing replaced them in this table because nothing replaced them
+    // in the product: the companion tour is authored content over the anchor
+    // registry and builds no system prompt, so it has no rules to carry.
+    assert.equal(PIPELINES.length, 2);
+    assert.equal(KNOWN_PRODUCERS.length, 3);
   });
 });

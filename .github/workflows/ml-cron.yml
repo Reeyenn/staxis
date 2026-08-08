@@ -21,11 +21,25 @@ name: ML cron
 # scraper's heartbeat row).
 
 on:
-  # INVENTORY ML re-enabled 2026-07-05 — the inventory-rate pipeline now has
-  # a live data source again: the seal-daily cron projects tomorrow's
+  # INVENTORY ML re-enabled 2026-07-05 — the inventory-rate pipeline was given
+  # a live data source again: /api/cron/seal-daily projects tomorrow's
   # occupancy into plan_snapshots from the pms_* tables (migration 0292),
   # so inventory training + prediction produce real output instead of the
   # dead-endpoint failures that got the whole block disabled on 2026-05-30.
+  #
+  # ⚠ THAT PRODUCER IS NOT RUNNING, AND HAS NOT BEEN. The sentence above says
+  # "the seal-daily cron". There is no seal-daily cron: the route exists, its
+  # own header still calls itself hourly, and it is in no vercel.json entry and
+  # no workflow. Checked in production on 2026-08-07: plan_snapshots held ZERO
+  # rows and daily_logs had not gained one since 2026-07-18, while the two jobs
+  # below ran green every day and every Sunday. A heartbeat proves a route
+  # finished, never that it had anything to read.
+  #
+  # Whether the seal goes back on a timer is a real decision (its projection is
+  # gated on fresh PMS evidence and the robot that produced it is retired), so
+  # it is NOT being made here. It is recorded in the job catalog as a `fedBy`
+  # link and guarded by src/lib/__tests__/job-feeds.test.ts, where the open
+  # question is written down rather than left in a comment nobody re-reads.
   #
   # Enabled here: aggregate-priors (Sun 03:00 CT) → train-inventory
   # (Sun 04:00 CT, +1h so priors land first) → predict-inventory (daily
@@ -400,7 +414,17 @@ jobs:
     # pipeline (backfill prediction_log → per-(property, layer) Wilcoxon →
     # cooldown filter → BH-FDR → execute or dry-run-log). See
     # /api/cron/ml-auto-rollback route header for the full design.
-    if: github.event.schedule == '45 11 * * *' || github.event_name == 'workflow_dispatch'
+    #
+    # THE ROUTE THIS CALLS NO LONGER EXISTS. It was removed with the rest of
+    # the housekeeping ML surface; the job catalog carries it as `retired`,
+    # "referenced API route is no longer present". The job and its history are
+    # kept, as every other parked ML job is, but it must not be reachable:
+    # while `workflow_dispatch` could still start it, EVERY manual run of this
+    # workflow ended red on a 404 from a page that was deleted, which made the
+    # documented way to run the parked ML jobs by hand look broken. Its cron
+    # line above stays commented, so nothing can reach it until somebody puts
+    # the route back and restores the dispatch clause with it.
+    if: github.event.schedule == '45 11 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 7
     steps:

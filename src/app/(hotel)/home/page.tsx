@@ -28,6 +28,8 @@ import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
 import { shouldWaitForPortfolioEntry } from '@/lib/portfolio-ui/entry-routing';
+import { companyScopeHref, localAppHref, resolveHomeEntry } from '@/lib/portfolio-ui/acting-scope';
+import { buildScopeSwitcherRows, type ScopeSwitcherRow } from '@/lib/portfolio-ui/scope-switcher';
 
 interface TileLine { en: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
@@ -147,86 +149,175 @@ function HomeHub() {
   );
 }
 
+/**
+ * Where to work, as a list. Company rows and hotel rows, exactly the rows the
+ * avatar switcher shows, because this screen and that menu answer the same
+ * question. This is what replaced the /portfolio/choose redirect: a person with
+ * two management companies picks one here instead of being sent to a separate
+ * world to do it.
+ */
+function ScopePicker({
+  title,
+  message,
+  rows,
+  onChoose,
+}: {
+  title: string;
+  message: string;
+  rows: readonly ScopeSwitcherRow[];
+  onChoose: (row: ScopeSwitcherRow) => void;
+}) {
+  return (
+    <main style={{ maxWidth: 640, margin: '0 auto', padding: '48px 20px 64px' }}>
+      <h1 style={{
+        fontFamily: 'var(--font-instrument-serif), serif',
+        fontSize: 34,
+        fontWeight: 400,
+        letterSpacing: '-0.01em',
+        margin: '0 0 8px',
+      }}>
+        {title}
+      </h1>
+      <p style={{ color: 'var(--text-secondary)', margin: '0 0 24px', lineHeight: 1.5 }}>
+        {message}
+      </p>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {rows.map((row) => (
+          <button
+            key={row.key}
+            type="button"
+            onClick={() => onChoose(row)}
+            aria-current={row.active ? 'true' : undefined}
+            style={{
+              textAlign: 'left',
+              padding: '14px 16px',
+              borderRadius: 12,
+              border: row.active
+                ? '1.5px solid var(--accent, #3E5C48)'
+                : '1px solid rgba(62,92,72,.18)',
+              background: '#FFFFFF',
+              font: 'inherit',
+              cursor: 'pointer',
+            }}
+          >
+            {row.label}
+          </button>
+        ))}
+      </div>
+    </main>
+  );
+}
+
 export default function HomePage() {
   const { user, loading: authLoading } = useAuth();
-  const { properties, activeProperty, loading: propertyLoading } = useProperty();
+  const {
+    properties,
+    activeProperty,
+    activeScope,
+    activeCompany,
+    loading: propertyLoading,
+    setActiveScope,
+  } = useProperty();
   const portfolio = usePortfolio();
   const acting = useOptionalHotelActingContext();
   const navigation = useReliableNavigation();
   const replaceNavigation = navigation.replace;
+  const pushNavigation = navigation.push;
   const hotelDrilldown = acting?.request.kind === 'hotel';
   const portfolioEntryPending = shouldWaitForPortfolioEntry({
     hotelDrilldown,
     portfolioLoading: portfolio.loading,
   });
-  const portfolioDestination = !hotelDrilldown && portfolio.data
-    ? portfolio.data.selection.state === 'selected'
-      ? `/portfolio?organizationId=${encodeURIComponent(
-          portfolio.data.selection.selectedOrganizationId!,
-        )}`
-      : portfolio.data.selection.state === 'needs_selection'
-        ? '/portfolio/choose'
-        : null
-    : null;
+  // THE /portfolio REDIRECT IS GONE. Company view is a mode of this app, so a
+  // company leader stays here and Home renders the company scope. The decision
+  // is a pure function whose vocabulary contains no other world to send them to.
+  const companyOptions = portfolio.data?.contexts ?? [];
+  const entry = resolveHomeEntry({
+    authLoading,
+    propertyLoading,
+    portfolioEntryPending,
+    signedIn: Boolean(user),
+    scope: activeScope,
+    companyOptionCount: companyOptions.length,
+  });
+
+  const switcherRows = buildScopeSwitcherRows({
+    companies: companyOptions,
+    hotels: properties.map((property) => ({ id: property.id, name: property.name })),
+    activeScope,
+  });
+  const chooseScope = React.useCallback((row: ScopeSwitcherRow) => {
+    if (row.kind === 'company') {
+      if (!setActiveScope({ kind: 'company', organizationId: row.organizationId }).ok) return;
+      pushNavigation(companyScopeHref('/home', row.organizationId));
+      return;
+    }
+    if (!setActiveScope({ kind: 'hotel', propertyId: row.propertyId }).ok) return;
+    pushNavigation(localAppHref('/home'));
+  }, [pushNavigation, setActiveScope]);
 
   // Middleware protects full-page requests, but sign-out happens client-side.
   // Unmount the entire app shell immediately so cached hotel details are never
-  // left visible, then navigate to Sign In. Property-less company leaders go
-  // directly to Company Hub; other zero-access accounts keep the selector's
-  // explicit pending/empty state.
+  // left visible, then navigate to Sign In. Accounts with no company option and
+  // no selected hotel keep the picker's explicit pending/empty state.
   React.useEffect(() => {
-    if (authLoading || propertyLoading || portfolioEntryPending) return;
-    if (!user) {
+    if (entry.kind === 'signin') {
       replaceNavigation('/signin');
       return;
     }
-    if (portfolioDestination) {
-      replaceNavigation(portfolioDestination);
-      return;
-    }
-    if (activeProperty) return;
-    if (user.role === 'admin' || properties.length > 0) {
-      replaceNavigation('/property-selector');
-      return;
-    }
+    if (entry.kind === 'property_selector') replaceNavigation('/property-selector');
+  }, [entry.kind, replaceNavigation]);
 
-    replaceNavigation('/property-selector');
-  }, [
-    user,
-    authLoading,
-    properties.length,
-    activeProperty,
-    propertyLoading,
-    portfolioDestination,
-    portfolioEntryPending,
-    replaceNavigation,
-  ]);
+  if (entry.kind === 'wait') return <RouteLoadingState title="Opening Home…" />;
+  if (entry.kind === 'signin') return <RouteLoadingState title="Returning to Sign In…" />;
 
-  if (authLoading || propertyLoading || portfolioEntryPending || portfolioDestination) {
-    return <RouteLoadingState title="Opening Home…" />;
+  if (entry.kind === 'company') {
+    const companyName = activeCompany?.organizationName
+      ?? (activeScope.kind === 'company' ? activeScope.scope.name : 'your company');
+    const companyHotelIds = activeScope.kind === 'company'
+      ? new Set(activeScope.scope.propertyIds)
+      : new Set<string>();
+    const companyHotelRows = switcherRows.filter(
+      (row) => row.kind === 'hotel' && companyHotelIds.has(row.propertyId.toLowerCase()),
+    );
+    return (
+      <ScopePicker
+        title={`${companyName} · All hotels`}
+        message={companyHotelRows.length > 0
+          ? 'The company view is on its way. For now, open one of these hotels to work in it.'
+          : 'The company view is on its way. Your hotels will appear here once they load.'}
+        rows={companyHotelRows}
+        onChoose={chooseScope}
+      />
+    );
   }
-  if (!user) {
-    return <RouteLoadingState title="Returning to Sign In…" />;
+
+  if (entry.kind === 'choose_scope') {
+    return (
+      <ScopePicker
+        title="Where do you want to work?"
+        message="Pick a company to see all of its hotels together, or open one hotel."
+        rows={switcherRows}
+        onChoose={chooseScope}
+      />
+    );
   }
-  if (!activeProperty) {
+
+  if (entry.kind === 'property_selector') {
     if (properties.length === 0) {
       return <RouteLoadingState title="Opening your workspace…" message="Checking company and hotel access." />;
     }
     return (
-
-        <RouteErrorState
-          title="No hotel is selected"
-          message="Choose a hotel before opening Home."
-          retryLabel="Choose a hotel"
-          onRetry={() => navigation.push('/property-selector')}
-        />
-
+      <RouteErrorState
+        title="No hotel is selected"
+        message="Choose a hotel before opening Home."
+        retryLabel="Choose a hotel"
+        onRetry={() => pushNavigation('/property-selector')}
+      />
     );
   }
 
-  return (
+  if (!activeProperty) return <RouteLoadingState title="Opening Home…" />;
 
-      <HomeHub />
-
-  );
+  return <HomeHub />;
 }

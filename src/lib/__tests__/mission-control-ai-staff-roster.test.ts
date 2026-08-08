@@ -406,3 +406,61 @@ describe('the registry the column reads', () => {
     assert.ok(AI_EMPLOYEES.length > hiredAiEmployees().length, 'the plan should outnumber the hires');
   });
 });
+
+// ─── 7. the one number on this page that is a claim about money ─────────────
+
+/**
+ * THE "AI SPEND TODAY" LIGHT.
+ *
+ * It read `totalCostUsd + backgroundCostUsd` — two of the three buckets the
+ * metrics endpoint published on the day this surface was written. The ledger
+ * grew two more kinds afterwards (0117 audio, 0145 vision) and this line did
+ * not, so the founder's one glance at what the product costs him excluded every
+ * invoice scan, shelf photo, scanned page and voice note. Those are the most
+ * expensive calls Staxis makes. A twelve-dollar day showed as thirty cents,
+ * green, with nothing on the screen suggesting a number was missing.
+ *
+ * The fix is that the light quotes the endpoint's own all-rows figure. What is
+ * checked here is the shape of the mistake rather than the two kinds that
+ * happened to be missing: a payload whose parts exceed the buckets this build
+ * knows must not lose the difference.
+ */
+describe('the spend light quotes the whole bill', () => {
+  test('a kind this build has no tile for is still inside the figure', () => {
+    // `allKindsCostUsd` is the sum of the ROWS. Here it is larger than every
+    // named bucket added together, which is exactly what a new kind of spending
+    // looks like before anybody gives it a line.
+    const usd = surface.spendTodayUsd({
+      today: {
+        totalCostUsd: 1,
+        backgroundCostUsd: 0.5,
+        visionCostUsd: 0,
+        audioCostUsd: 0,
+        evalCostUsd: 0,
+        allKindsCostUsd: 12.25,
+      },
+    });
+    assert.equal(usd, 12.25, 'the light must draw the ledger total, not a sum of the tiles it knows');
+  });
+
+  test('scans and voice notes are counted even from a payload with no total', () => {
+    // The fallback path, for a response cached from a build that predates the
+    // all-rows field. It must still add every bucket it has rather than the two
+    // it started with.
+    const usd = surface.spendTodayUsd({
+      today: {
+        totalCostUsd: 1,
+        backgroundCostUsd: 0.5,
+        visionCostUsd: 8,
+        audioCostUsd: 0.25,
+        evalCostUsd: 0.1,
+      },
+    });
+    assert.equal(usd, 9.85);
+  });
+
+  test('no metrics at all is zero, not a crash', () => {
+    assert.equal(surface.spendTodayUsd(null), 0);
+    assert.equal(surface.spendTodayUsd({}), 0);
+  });
+});
