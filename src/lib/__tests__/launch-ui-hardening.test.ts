@@ -69,9 +69,13 @@ test('communications has a phone list/detail flow and does not collapse failures
 
   assert.match(app, /comms-mobile-detail/);
   assert.match(app, /min-width:44px;min-height:44px/);
-  assert.match(app, /<CommsPropertyApp key=\{activePropertyId \?\? 'no-property'\}/);
-  assert.match(app, /<ThreadPanel key=\{`\$\{selConvo\.id\}:\$\{threadParent\.id\}`\}/);
-  assert.match(app, /data: boot, loading: bootLoading, error: bootError/);
+  // The workspace remount key includes the authoritative scope so a company
+  // switch cannot retain a hotel conversation. Thread panes carry the same
+  // property+conversation identity, and hotel bootstraps are the last-good
+  // records source for the composed inbox.
+  assert.match(app, /<CommsPropertyApp key=\{`\$\{activePropertyId \?\? 'no-property'\}:\$\{scopeKey\}`\}/);
+  assert.match(app, /<ThreadPanel key=\{`\$\{selConvo\.propertyId\}:\$\{selConvo\.id\}:\$\{threadParent\.id\}`\}/);
+  assert.match(app, /records: hotelBootstraps, failures: hotelBootstrapFailures/);
   // The worklist read now belongs to the screen it IS, so it is no longer
   // lazy — it is the page's main content. What still has to hold is that a
   // failed refresh keeps the last-good rows instead of blanking the list.
