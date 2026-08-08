@@ -69,7 +69,9 @@ export interface LifecycleSourceSummary {
 export interface LifecycleActionProjection {
   id: string;
   kind: string;
+  contractVersion: typeof ACTION_CONTRACT_VERSION;
   effect: ActionAdmissionContract['effect'];
+  authority: ActionAuthorityContract;
   targetId: string | null;
   approval: ActionAdmissionContract['approval'] & {
     state: 'required' | 'approved' | 'rejected' | 'not_required';
@@ -544,7 +546,9 @@ function parseAction(value: unknown): LifecycleActionProjection | null {
   return {
     id,
     kind,
+    contractVersion: ACTION_CONTRACT_VERSION,
     effect,
+    authority,
     targetId,
     approval,
     frozenInput,
@@ -752,4 +756,89 @@ export function parseLifecycleProjectionRow(row: unknown): LifecycleProjection |
     outcomeEvidenceId,
     reason,
   };
+}
+
+/**
+ * Normalize and validate the browser-facing response envelope. The database
+ * parser above remains the single source of truth for nested source/action,
+ * lifecycle-link, clock, and outcome invariants; this adapter only translates
+ * its camelCase item shape back to the view-row keys it already understands.
+ */
+function lifecycleResponseItemRow(value: unknown): unknown {
+  if (!record(value)) return value;
+  const entity = record(value.entity) ? value.entity : undefined;
+  const freshness = record(value.freshness)
+    ? { status: value.freshness.status, max_age_seconds: value.freshness.maxAgeSeconds }
+    : value.freshness;
+  const completeness = record(value.completeness)
+    ? { status: value.completeness.status, reason: value.completeness.reason }
+    : value.completeness;
+  const outcome = value.outcome === null
+    ? null
+    : record(value.outcome)
+      ? {
+          id: value.outcomeEvidenceId,
+          state: value.outcome.state,
+          basis: value.outcome.basis,
+          sourceFactId: value.outcome.sourceFactId,
+          observed_at: value.outcome.observedAt,
+        }
+      : value.outcome;
+  return {
+    contract_version: value.contractVersion,
+    projection_id: value.id,
+    property_id: value.propertyId,
+    finding_id: value.findingId,
+    proposal_id: value.proposalId,
+    approval_id: value.approvalId,
+    execution_receipt_id: value.executionReceiptId,
+    outcome_evidence_id: value.outcomeEvidenceId,
+    entity_kind: entity?.kind,
+    entity_id: entity?.id,
+    entity_label: entity?.label,
+    title: value.title,
+    summary: value.summary,
+    state: value.state,
+    prior_states: value.priorStates,
+    source_fact_ids: value.sourceFactIds,
+    sources: value.sources,
+    effective_at: value.effectiveAt,
+    as_of: value.asOf,
+    observed_at: value.observedAt,
+    recorded_at: value.recordedAt,
+    freshness,
+    completeness,
+    authority: value.authority,
+    action: value.action,
+    domain_work_item: value.domainWorkItem,
+    outcome,
+    reason: value.reason,
+  };
+}
+
+export function parseLifecycleResponse(value: unknown): LifecycleResponse | null {
+  if (!record(value) || value.contractVersion !== LIFECYCLE_CONTRACT_VERSION) return null;
+  const generatedAt = iso(value.generatedAt);
+  const coverage = value.coverage;
+  const items = value.items;
+  if (!generatedAt || !record(coverage) || coverage.limit !== 100 || typeof coverage.returned !== 'number' || !Number.isInteger(coverage.returned) || coverage.returned < 0 || coverage.returned > 100 || typeof coverage.truncated !== 'boolean' || (coverage.truncated && coverage.returned !== 100) || !Array.isArray(items) || coverage.returned !== items.length) return null;
+
+  const parsedItems: LifecycleProjection[] = [];
+  const projectionIds = new Set<string>();
+  for (const item of items) {
+    const parsed = parseLifecycleProjectionRow(lifecycleResponseItemRow(item));
+    if (!parsed || projectionIds.has(parsed.id)) return null;
+    projectionIds.add(parsed.id);
+    parsedItems.push(parsed);
+  }
+  return {
+    contractVersion: LIFECYCLE_CONTRACT_VERSION,
+    generatedAt,
+    coverage: { returned: coverage.returned, limit: 100, truncated: coverage.truncated },
+    items: parsedItems,
+  };
+}
+
+export function isLifecycleResponse(value: unknown): value is LifecycleResponse {
+  return parseLifecycleResponse(value) !== null;
 }

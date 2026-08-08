@@ -10,8 +10,21 @@ import {
   lifecycleStateProgress,
   lifecycleTime,
 } from '@/components/concourse/LifecycleProjection';
+import { parseLifecycleResponse } from '@/lib/staxis/lifecycle';
 import type { LifecycleActionProjection } from '@/lib/staxis/lifecycle';
 import type { LifecycleResponse } from '@/lib/staxis/lifecycle';
+
+const PROPERTY_ID = '10000000-0000-4000-8000-000000000001';
+const PROJECTION_ID = '20000000-0000-4000-8000-000000000001';
+const SOURCE_ID = '30000000-0000-4000-8000-000000000001';
+const SOURCE_RECEIPT_ID = '40000000-0000-4000-8000-000000000001';
+const SOURCE_DEFINITION_ID = '50000000-0000-4000-8000-000000000001';
+const PROPOSAL_ID = '70000000-0000-4000-8000-000000000001';
+const APPROVAL_ID = '80000000-0000-4000-8000-000000000001';
+const EXECUTION_RECEIPT_ID = '90000000-0000-4000-8000-000000000001';
+const DOMAIN_ID = 'a0000000-0000-4000-8000-000000000001';
+const OUTCOME_ID = 'b0000000-0000-4000-8000-000000000002';
+const HASH = 'a'.repeat(64);
 
 function textOf(node: unknown, out: string[] = []): string[] {
   if (node === null || node === undefined || typeof node === 'boolean') return out;
@@ -176,31 +189,31 @@ describe('Staxis lifecycle projection copy', () => {
     const payload = {
       contractVersion: 'staxis-lifecycle.v1',
       generatedAt: '2026-08-08T12:00:00.000Z',
-      coverage: { returned: 100, limit: 100, truncated: true },
+      coverage: { returned: 1, limit: 100, truncated: false },
       items: [{
         contractVersion: 'staxis-lifecycle.v1',
-        id: 'projection-id',
-        propertyId: 'property-id',
-        entity: { kind: 'room', id: 'room-id', label: 'Room 214' },
+        id: PROJECTION_ID,
+        propertyId: PROPERTY_ID,
+        entity: { kind: 'room', id: 'room-214', label: 'Room 214' },
         title: 'Inspection proposed',
         summary: 'A room needs an inspection.',
         state: 'not_observable' as const,
         priorStates: ['observed', 'proposed', 'approved', 'executed'] as const,
-        findingId: 'finding-id',
-        proposalId: 'proposal-id',
-        approvalId: 'approval-id',
-        executionReceiptId: 'execution-receipt-id',
-        sourceFactIds: ['source-id'],
+        findingId: '60000000-0000-4000-8000-000000000001',
+        proposalId: PROPOSAL_ID,
+        approvalId: APPROVAL_ID,
+        executionReceiptId: EXECUTION_RECEIPT_ID,
+        sourceFactIds: [SOURCE_ID],
         sources: [{
-          id: 'source-id',
+          id: SOURCE_ID,
           kind: 'pms_report',
           label: 'PMS report',
           reference: 'Daily room status',
           contractVersion: 'staxis-source-fact.v1',
-          sourceDefinitionId: 'source-definition-id',
+          sourceDefinitionId: SOURCE_DEFINITION_ID,
           claimScope: 'example.claim',
-          receiptId: 'source-receipt-id',
-          receiptHash: 'source-hash',
+          receiptId: SOURCE_RECEIPT_ID,
+          receiptHash: HASH,
           effectiveAt: '2026-08-08T11:00:00.000Z',
           asOf: '2026-08-08T11:00:00.000Z',
           observedAt: '2026-08-08T11:05:00.000Z',
@@ -220,10 +233,11 @@ describe('Staxis lifecycle projection copy', () => {
         recordedAt: '2026-08-08T11:06:00.000Z',
         freshness: { status: 'fresh' as const, maxAgeSeconds: 300 },
         completeness: { status: 'complete' as const, reason: null },
-        authority: { owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' }, level: 2, precedence: 1, scopes: [{ claimScope: 'example.claim', authority: 2, precedence: 1 }] },
+        authority: { owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' }, level: 1, precedence: 1, scopes: [{ claimScope: 'example.claim', authority: 1, precedence: 1 }] },
         action: {
-          id: 'action-id',
+          id: PROPOSAL_ID,
           kind: 'create_work_order',
+          contractVersion: 'staxis-action.v1',
           effect: {
             domain: 'hotel operations',
             operation: 'create work order',
@@ -232,9 +246,10 @@ describe('Staxis lifecycle projection copy', () => {
             statement: 'Creates one in-app work order.',
             limit: 'Does not contact a vendor or confirm physical completion.',
           },
-          targetId: 'target-id',
+          authority: { propertyScoped: true, roles: ['manager'], capability: null, surfaces: ['feed'] },
+          targetId: DOMAIN_ID,
           approval: { mode: 'explicit_card' as const, tier: 'card' as const, policyId: 'policy', state: 'approved' as const },
-          frozenInput: { immutable: true as const, fields: ['propertyId'], fingerprint: 'server_sha256' as const, staleInput: 'decline' as const, hash: 'hash' },
+          frozenInput: { immutable: true as const, fields: ['propertyId'], fingerprint: 'server_sha256' as const, staleInput: 'decline' as const, hash: HASH },
           idempotency: { scope: 'property_action' as const, keyFields: ['propertyId'], retry: 'first_receipt' as const },
           receipt: { contractVersion: 'staxis-action.v1', requiredFields: ['id'], internalOnly: true as const, physicalCompletionClaim: 'never' as const },
           outcome: {
@@ -244,12 +259,12 @@ describe('Staxis lifecycle projection copy', () => {
             basisRequired: true as const,
             state: 'not_observable' as const,
             basis: 'The source does not expose completion.',
-            observedAt: null,
+            observedAt: '2026-08-08T11:06:00.000Z',
           },
         },
-        domainWorkItem: { kind: 'work_order', id: 'work-id', label: 'Room 214 inspection', href: null, observedAt: '2026-08-08T11:06:00.000Z', owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' } },
-        outcome: { state: 'not_observable' as const, basis: 'The source does not expose completion.', sourceFactId: null, observedAt: null },
-        outcomeEvidenceId: 'outcome-evidence-id',
+        domainWorkItem: { kind: 'work_order', id: DOMAIN_ID, label: 'Room 214 inspection', href: null, observedAt: '2026-08-08T11:06:00.000Z', owner: { kind: 'human' as const, label: 'Morgan', role: 'GM' } },
+        outcome: { state: 'not_observable' as const, basis: 'The source does not expose completion.', sourceFactId: null, observedAt: '2026-08-08T11:06:00.000Z' },
+        outcomeEvidenceId: OUTCOME_ID,
         reason: 'No trusted completion signal is available.',
       }],
     } satisfies LifecycleResponse;
@@ -264,13 +279,61 @@ describe('Staxis lifecycle projection copy', () => {
     assert.match(rendered, /Room 214 inspection reference recorded/);
     assert.match(rendered, /Not observable/);
     assert.match(rendered, /Outcome evidence recorded/);
-    assert.match(rendered, /Showing the latest 100 lifecycle records; older records are not included in this view\./);
     const completedSteps = findAll(tree, (props) => props.className === 'fx-life-state fx-life-state-on');
     assert.equal(completedSteps.length, 4);
     assert.equal(findAll(tree, (props) => props.className === 'fx-life-state fx-life-state-terminal').length, 1);
 
-    const completePayload = { ...payload, coverage: { returned: 1, limit: 100 as const, truncated: false } } satisfies LifecycleResponse;
-    const completeTree = resolveTree(LifecycleProjection({ payload: completePayload }));
-    assert.doesNotMatch(textOf(completeTree).join(' '), /Showing the latest 100 lifecycle records/);
+    const truncatedPayload = {
+      ...payload,
+      coverage: { returned: 100, limit: 100 as const, truncated: true },
+      items: Array.from({ length: 100 }, (_, index) => ({
+        ...payload.items[0],
+        id: `20000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      })),
+    } satisfies LifecycleResponse;
+    const truncatedTree = resolveTree(LifecycleProjection({ payload: truncatedPayload }));
+    assert.match(textOf(truncatedTree).join(' '), /Showing the latest 100 lifecycle records; older records are not included in this view\./);
+
+    assert.ok(parseLifecycleResponse(payload));
+    assert.equal(parseLifecycleResponse({ ...payload, generatedAt: 'not-a-date' }), null);
+    assert.equal(parseLifecycleResponse({ ...payload, coverage: { returned: 0, limit: 100, truncated: false } }), null);
+    assert.equal(parseLifecycleResponse({ ...payload, items: [{ ...payload.items[0], proposalId: 'not-a-uuid' }] }), null);
+    assert.equal(parseLifecycleResponse({ ...payload, items: [{ ...payload.items[0], sources: [{ ...payload.items[0].sources[0], observedAt: 'not-a-date' }] }] }), null);
+    assert.equal(parseLifecycleResponse({
+      ...payload,
+      items: [{
+        ...payload.items[0],
+        action: {
+          ...payload.items[0].action!,
+          effect: { ...payload.items[0].action!.effect, boundary: 'external_side_effect' as never },
+        },
+      }],
+    }), null);
+    assert.equal(parseLifecycleResponse({
+      ...payload,
+      items: [{
+        ...payload.items[0],
+        action: { ...payload.items[0].action!, approval: { ...payload.items[0].action!.approval, state: 'unknown' as never } },
+      }],
+    }), null);
+    assert.equal(parseLifecycleResponse({
+      ...payload,
+      items: [{
+        ...payload.items[0],
+        action: { ...payload.items[0].action!, outcome: { ...payload.items[0].action!.outcome, state: 'success' as never, verificationState: 'success' as never } },
+      }],
+    }), null);
+    assert.equal(parseLifecycleResponse({
+      ...payload,
+      items: [{
+        ...payload.items[0],
+        domainWorkItem: { ...payload.items[0].domainWorkItem!, href: 'https://outside.example' as never },
+      }],
+    }), null);
+    assert.equal(parseLifecycleResponse({
+      ...payload,
+      coverage: { returned: 2, limit: 100, truncated: false },
+      items: [payload.items[0], { ...payload.items[0] }],
+    }), null);
   });
 });

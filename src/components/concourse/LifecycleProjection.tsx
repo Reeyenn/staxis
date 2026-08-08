@@ -8,7 +8,7 @@ import type {
   LifecycleResponse as LifecycleProjectionPayload,
   LifecycleState as LifecycleProjectionState,
 } from '@/lib/staxis/lifecycle';
-import { LIFECYCLE_CONTRACT_VERSION, parseLifecycleState } from '@/lib/staxis/lifecycle';
+import { parseLifecycleResponse } from '@/lib/staxis/lifecycle';
 
 type LifecycleAction = LifecycleActionProjection;
 type LifecycleFreshness = LifecycleProjectionItem['freshness'];
@@ -342,117 +342,6 @@ function LifecycleItem({ item }: { item: LifecycleProjectionItem }) {
   );
 }
 
-type LifecyclePayloadRecord = Record<string, unknown>;
-
-function lifecycleRecord(value: unknown): value is LifecyclePayloadRecord {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function lifecycleNullableText(value: unknown): boolean {
-  return value === null || typeof value === 'string';
-}
-
-function lifecycleOwnerShape(value: unknown): boolean {
-  if (!lifecycleRecord(value)) return false;
-  return typeof value.kind === 'string'
-    && lifecycleNullableText(value.label)
-    && lifecycleNullableText(value.role);
-}
-
-function lifecycleSourceShape(value: unknown): boolean {
-  if (!lifecycleRecord(value)) return false;
-  return typeof value.kind === 'string'
-    && typeof value.label === 'string'
-    && typeof value.reference === 'string'
-    && lifecycleNullableText(value.receiptId)
-    && lifecycleNullableText(value.receiptHash)
-    && lifecycleOwnerShape(value.owner);
-}
-
-function lifecycleActionShape(value: unknown): boolean {
-  if (value === null) return true;
-  if (!lifecycleRecord(value) || !lifecycleRecord(value.effect) || !lifecycleRecord(value.approval) || !lifecycleRecord(value.outcome)) return false;
-  return typeof value.effect.statement === 'string'
-    && typeof value.effect.boundary === 'string'
-    && typeof value.effect.limit === 'string'
-    && typeof value.approval.state === 'string'
-    && typeof value.outcome.state === 'string'
-    && lifecycleNullableText(value.outcome.basis)
-    && lifecycleNullableText(value.outcome.observedAt);
-}
-
-function lifecycleDomainWorkItemShape(value: unknown): boolean {
-  if (value === null) return true;
-  if (!lifecycleRecord(value)) return false;
-  return typeof value.kind === 'string'
-    && typeof value.id === 'string'
-    && lifecycleNullableText(value.label)
-    && (value.href === null || typeof value.href === 'string')
-    && typeof value.observedAt === 'string'
-    && lifecycleOwnerShape(value.owner);
-}
-
-/**
- * The API response is typed at compile time, but useApiResource intentionally
- * unwraps arbitrary JSON. Legacy fixtures (and a malformed successful response)
- * can therefore be truthy without being a lifecycle projection. Check the
- * render surface before dereferencing it so bad data becomes an explicit
- * incomplete state instead of an empty or crashing panel.
- */
-function isLifecycleProjectionPayload(value: unknown): value is LifecycleProjectionPayload {
-  if (!lifecycleRecord(value)
-    || value.contractVersion !== LIFECYCLE_CONTRACT_VERSION
-    || typeof value.generatedAt !== 'string') return false;
-
-  const coverage = value.coverage;
-  const items = value.items;
-  const returned = lifecycleRecord(coverage) ? coverage.returned : null;
-  if (!lifecycleRecord(coverage)
-    || coverage.limit !== 100
-    || typeof returned !== 'number'
-    || !Number.isInteger(returned)
-    || returned < 0
-    || returned > 100
-    || typeof coverage.truncated !== 'boolean'
-    || !Array.isArray(items)
-    || items.length > returned) return false;
-
-  return items.every((item) => {
-    if (!lifecycleRecord(item)
-      || typeof item.id !== 'string'
-      || parseLifecycleState(item.state) === null
-      || typeof item.title !== 'string'
-      || typeof item.summary !== 'string'
-      || !lifecycleRecord(item.entity)
-      || typeof item.entity.kind !== 'string'
-      || !lifecycleNullableText(item.entity.id)
-      || !lifecycleNullableText(item.entity.label)
-      || !Array.isArray(item.sourceFactIds)
-      || item.sourceFactIds.length === 0
-      || !item.sourceFactIds.every((sourceFactId) => typeof sourceFactId === 'string')
-      || !Array.isArray(item.sources)
-      || item.sources.length === 0
-      || item.sources.length !== item.sourceFactIds.length
-      || !item.sources.every(lifecycleSourceShape)
-      || !lifecycleRecord(item.freshness)
-      || typeof item.freshness.status !== 'string'
-      || !lifecycleRecord(item.completeness)
-      || typeof item.completeness.status !== 'string'
-      || !lifecycleNullableText(item.completeness.reason)
-      || !lifecycleRecord(item.authority)
-      || !lifecycleOwnerShape(item.authority.owner)
-      || !lifecycleActionShape(item.action)
-      || !lifecycleDomainWorkItemShape(item.domainWorkItem)
-      || !lifecycleNullableText(item.reason)) return false;
-    if (item.outcome !== null
-      && (!lifecycleRecord(item.outcome)
-        || typeof item.outcome.state !== 'string'
-        || !lifecycleNullableText(item.outcome.basis)
-        || !lifecycleNullableText(item.outcome.observedAt))) return false;
-    return true;
-  });
-}
-
 function LifecycleUnavailable({ incomplete = false }: { incomplete?: boolean }) {
   return (
     <section className="fx-life-panel" aria-labelledby="fx-life-heading">
@@ -500,11 +389,12 @@ export function LifecycleProjection({
 
   if (!payload) return null;
 
-  if (!isLifecycleProjectionPayload(payload)) {
+  const normalizedPayload = parseLifecycleResponse(payload);
+  if (!normalizedPayload) {
     return <LifecycleUnavailable incomplete />;
   }
 
-  const generatedAt = lifecycleTime(payload.generatedAt);
+  const generatedAt = lifecycleTime(normalizedPayload.generatedAt);
   return (
     <section className="fx-life-panel" aria-labelledby="fx-life-heading">
       <div className="fx-ptop">
@@ -512,14 +402,14 @@ export function LifecycleProjection({
           <h2 id="fx-life-heading" className="fx-pt">Lifecycle</h2>
           <p className="fx-ps">What Staxis can currently prove, without implying more.</p>
         </div>
-        <span className="fx-count">{payload.items.length}</span>
+        <span className="fx-count">{normalizedPayload.items.length}</span>
       </div>
 
       <div className="fx-life-provenance">
         <span>{generatedAt ? `Projection read ${generatedAt}` : 'Projection time unavailable'}</span>
       </div>
 
-      {payload.coverage.truncated && (
+      {normalizedPayload.coverage.truncated && (
         <p className="fx-life-stale" role="status">
           Showing the latest 100 lifecycle records; older records are not included in this view.
         </p>
@@ -531,13 +421,13 @@ export function LifecycleProjection({
         </p>
       )}
 
-      {payload.items.length === 0 ? (
+      {normalizedPayload.items.length === 0 ? (
         <p className="fx-life-empty" role="status">
           No lifecycle records are available for this hotel. That does not mean every source is clear.
         </p>
       ) : (
         <div className="fx-life-items">
-          {payload.items.map((item) => <LifecycleItem key={item.id} item={item} />)}
+          {normalizedPayload.items.map((item) => <LifecycleItem key={item.id} item={item} />)}
         </div>
       )}
     </section>

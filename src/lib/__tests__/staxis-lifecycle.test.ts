@@ -6,7 +6,7 @@ import {
   LIFECYCLE_CONTRACT_VERSION,
   SOURCE_FACT_CONTRACT_VERSION,
 } from '../staxis/foundation';
-import { parseLifecycleProjectionRow, type LifecycleState } from '../staxis/lifecycle';
+import { parseLifecycleProjectionRow, parseLifecycleResponse, type LifecycleState } from '../staxis/lifecycle';
 
 const PID = '10000000-0000-4000-8000-000000000001';
 const PROJECTION_ID = '20000000-0000-4000-8000-000000000001';
@@ -201,6 +201,20 @@ describe('strict lifecycle projection parser', () => {
       if (state === 'not_observable' || state === 'unverifiable') {
         assert.deepEqual(parsed?.priorStates, ['observed', 'proposed', 'approved', 'executed']);
       }
+    }
+  });
+
+  test('round-trips every legal state through the normalized response envelope', () => {
+    const states: LifecycleState[] = ['observed', 'proposed', 'approved', 'executed', 'outcome_verified', 'not_observable', 'unverifiable'];
+    for (const state of states) {
+      const item = parseLifecycleProjectionRow(baseRow(state));
+      assert.ok(item, state);
+      assert.ok(parseLifecycleResponse({
+        contractVersion: LIFECYCLE_CONTRACT_VERSION,
+        generatedAt: '2026-08-08T10:06:00.000Z',
+        coverage: { returned: 1, limit: 100, truncated: false },
+        items: [item],
+      }), state);
     }
   });
 
