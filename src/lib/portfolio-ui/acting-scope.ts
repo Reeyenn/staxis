@@ -119,6 +119,14 @@ export function companyDefaultEntryDestination(input: {
   return input.sessionSelected ? '/home' : '/property-selector';
 }
 
+/** A deliberate in-memory pick is the safe fallback when sessionStorage is blocked. */
+export function sessionSelectionIsActive(input: {
+  sessionMarker: boolean;
+  inMemoryChoice: boolean;
+}): boolean {
+  return input.sessionMarker || input.inMemoryChoice;
+}
+
 /**
  * The standalone portfolio world. Those routes still render from the portfolio
  * bootstrap and deliberately never load the hotel roster, so company MODE stops

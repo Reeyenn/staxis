@@ -5,9 +5,11 @@ import { useEffect } from 'react';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { usePortfolio } from '@/contexts/PortfolioContext';
+import { useProperty } from '@/contexts/PropertyContext';
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import {
   companyDefaultEntryDestination,
+  sessionSelectionIsActive,
 } from '@/lib/portfolio-ui/acting-scope';
 
 /** Keep the public marketing page for signed-out visitors, but hand an
@@ -15,6 +17,7 @@ import {
 export default function ExistingSessionEntryRedirect({ children }: { children: ReactNode }) {
   const { user, loading: authLoading, authorizationChecked } = useAuth();
   const portfolio = usePortfolio();
+  const { sessionHotelChoice } = useProperty();
   const navigation = useReliableNavigation();
   const companyHat = portfolio.data?.hasCompanyHat === true;
   let sessionSelected = false;
@@ -28,7 +31,10 @@ export default function ExistingSessionEntryRedirect({ children }: { children: R
   const destination = !authLoading && user && !portfolio.loading
     ? companyDefaultEntryDestination({
         companyHat,
-        sessionSelected,
+        sessionSelected: sessionSelectionIsActive({
+          sessionMarker: sessionSelected,
+          inMemoryChoice: sessionHotelChoice,
+        }),
         bootstrapError: portfolio.enabled && portfolio.error !== null,
       })
     : null;

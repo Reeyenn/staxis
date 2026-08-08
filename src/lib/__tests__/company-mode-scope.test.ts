@@ -12,6 +12,7 @@ import {
   resolveActingScopeRequest,
   resolveCompanyAppScope,
   resolveHomeEntry,
+  sessionSelectionIsActive,
   sameAppScope,
   sectionsForScope,
   UNRESOLVED_LOADING,
@@ -608,6 +609,24 @@ describe('company-hat default entry policy', () => {
       companyDefaultEntryDestination({ companyHat: false, sessionSelected: true, bootstrapError: true, explicitScope: true }),
       null,
       'deep links stay untouched even when the discovery bootstrap fails',
+    );
+  });
+
+  test('an in-memory hotel choice opens Home when sessionStorage is blocked', () => {
+    assert.equal(
+      sessionSelectionIsActive({ sessionMarker: false, inMemoryChoice: true }),
+      true,
+    );
+    assert.equal(
+      companyDefaultEntryDestination({
+        companyHat: true,
+        sessionSelected: sessionSelectionIsActive({ sessionMarker: false, inMemoryChoice: true }),
+      }),
+      '/home',
+    );
+    assert.equal(
+      sessionSelectionIsActive({ sessionMarker: false, inMemoryChoice: false }),
+      false,
     );
   });
 

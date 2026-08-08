@@ -55,6 +55,8 @@ interface PropertyContextType {
   /** The company backing a company scope. Null at hotel scope. */
   activeCompany: PortfolioUiCompanyContext | null;
   activePropertyId: string | null;
+  /** A deliberate hotel pick held only for this provider/session lifetime. */
+  sessionHotelChoice: boolean;
   /** Canonical signed-in account + resolved hotel identity for all scoped
    *  client snapshots. Consumers must not rebuild this key independently. */
   activePropertyViewerKey: string | null;
@@ -98,6 +100,7 @@ const PropertyContext = createContext<PropertyContextType>({
   activeScope: UNRESOLVED_LOADING,
   activeCompany: null,
   activePropertyId: null,
+  sessionHotelChoice: false,
   activePropertyViewerKey: null,
   staff: [],
   staffLoaded: false,
@@ -205,6 +208,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     }
     return null;
   });
+  // Unlike the localStorage-backed active hotel, this bit is deliberately
+  // ephemeral. It is the blocked-storage fallback for a hotel a person chose
+  // from the selector during this authenticated provider lifetime; it resets
+  // on account changes so a later sign-in cannot inherit the choice.
+  const [sessionHotelChoice, setSessionHotelChoice] = useState(false);
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [staffLoaded, setStaffLoaded] = useState(false);
   const [staffLoadFailed, setStaffLoadFailed] = useState(false);
@@ -219,6 +227,9 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const userUid = user?.uid;
   const userAccountId = user?.accountId;
   const userRole = user?.role;
+  useEffect(() => {
+    setSessionHotelChoice(false);
+  }, [userUid, userAccountId]);
   // Canonicalize the legacy access array so a harmless ordering difference on
   // token refresh does not reload the shell, while any actual grant/revocation
   // changes the authorization identity immediately. Company-hat coverage is
@@ -366,6 +377,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     // resolved id and therefore has no reason to run again. Preserve the
     // terminal/loading snapshot so gated pages cannot hang until hard refresh.
     if (id === activePropertyId) {
+      setSessionHotelChoice(true);
       try { localStorage.setItem('hotelops-active-property', id); } catch { /* storage unavailable */ }
       return { ok: true };
     }
@@ -378,6 +390,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     // hotel with the previous hotel's capability map.
     setCapabilitySnapshot(null);
     setActivePropertyIdState(id);
+    setSessionHotelChoice(true);
     try { localStorage.setItem('hotelops-active-property', id); } catch { /* storage unavailable */ }
     return { ok: true };
   }, [activePropertyId, actingHotelId]);
@@ -926,6 +939,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         activeScope,
         activeCompany,
         activePropertyId: resolvedPropertyId,
+        sessionHotelChoice,
         activePropertyViewerKey,
         staff: exposedStaff,
         staffLoaded: exposedStaffLoaded,

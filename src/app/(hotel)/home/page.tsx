@@ -33,6 +33,7 @@ import {
   companyScopeHref,
   localAppHref,
   resolveHomeEntry,
+  sessionSelectionIsActive,
 } from '@/lib/portfolio-ui/acting-scope';
 import { buildScopeSwitcherRows, type ScopeSwitcherRow } from '@/lib/portfolio-ui/scope-switcher';
 
@@ -239,6 +240,7 @@ export default function HomePage() {
     activeProperty,
     activeScope,
     activeCompany,
+    sessionHotelChoice,
     loading: propertyLoading,
     setActiveScope,
   } = useProperty();
@@ -263,7 +265,10 @@ export default function HomePage() {
     ? null
     : companyDefaultEntryDestination({
         companyHat: companyHatUser,
-        sessionSelected: sessionHotelWasChosen(),
+        sessionSelected: sessionSelectionIsActive({
+          sessionMarker: sessionHotelWasChosen(),
+          inMemoryChoice: sessionHotelChoice,
+        }),
         explicitScope: explicitActingScope,
         bootstrapError: portfolio.enabled && portfolio.error !== null,
       });
