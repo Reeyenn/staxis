@@ -330,7 +330,7 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
     const originalFetch = globalThis.fetch;
     let getCount = 0;
     let deleteCount = 0;
-    let resolveRefresh: ((value: Response) => void) | null = null;
+    const refreshResolver: { current: ((value: Response) => void) | null } = { current: null };
     context.mock.method(globalThis, 'fetch', (input: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method?.toUpperCase() ?? 'GET';
       if (method === 'DELETE') {
@@ -340,7 +340,7 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
       getCount += 1;
       if (getCount === 2) {
         return new Promise<Response>((resolve) => {
-          resolveRefresh = resolve;
+          refreshResolver.current = resolve;
         });
       }
       return Promise.resolve(getCount === 1
@@ -368,7 +368,9 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
     await click(yes);
     assert.equal(deleteCount, 1);
     assert.equal(document.activeElement, container.querySelector('h3'), 'successful revoke keeps focus in the persistent Company people surface while refresh is pending');
-    resolveRefresh?.(response({ ok: false, error: 'Company invitations are unavailable right now.' }, 503));
+    const settleRefresh = refreshResolver.current;
+    assert.ok(settleRefresh, 'the follow-up company refresh should be pending before it is settled');
+    settleRefresh(response({ ok: false, error: 'Company invitations are unavailable right now.' }, 503));
     await flush();
     assert.equal(document.activeElement, container.querySelector('h3'), 'revoke refresh failure restores focus to the persistent Company people heading');
     assert.ok(container.querySelector('[role="alert"]'));
