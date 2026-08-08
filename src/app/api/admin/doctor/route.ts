@@ -910,6 +910,8 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   // and a job naming some hotels can no longer manage every grouping or hand
   // out whole-company access.
   '0468',
+  // Staxis shared source, admission, and lifecycle foundation.
+  '0469',
 ];
 
 /**
