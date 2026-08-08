@@ -32,6 +32,7 @@ import {
   hotelConversationKey,
   hotelRefreshPropertyIds,
   hotelScopeOptions,
+  resolveHotelConversationForAction,
   resolveHotelActionPropertyId,
   shouldShowHotelContext,
   sortHotelConversations,
@@ -679,6 +680,25 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
     availablePropertyIds: hotelOptions.map((hotel) => hotel.propertyId),
   });
   const selectedHotelFailure = hotelBootstrapFailures.find((failure) => !failure.unauthorized && failure.propertyId === (hotelFilter === ALL_HOTELS_FILTER ? pid : hotelFilter));
+  const beginAnnouncement = () => {
+    const actionInput = {
+      selectedPropertyId: selConvo?.propertyId ?? null,
+      hotelFilter,
+      availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+    };
+    const propertyId = resolveHotelActionPropertyId(actionInput);
+    if (!propertyId) {
+      actionFailed('Choose a hotel before posting an announcement.');
+      return;
+    }
+    const feed = resolveHotelConversationForAction(announce, actionInput);
+    if (!feed) {
+      actionFailed('No announcement feed is available for that hotel.');
+      return;
+    }
+    setMutationError(null);
+    selectConversation(feed.id, feed.propertyId);
+  };
 
   const right = mode === 'chats'
     ? (threadParent && selConvo
@@ -739,11 +759,7 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
               answer to "can I post one". */}
           <SidebarSection
             label={'Announcements'}
-            onAdd={() => {
-              const feed = announce[0];
-              if (feed) selectConversation(feed.id, feed.propertyId);
-              else beginSearch();
-            }}
+            onAdd={beginAnnouncement}
             tip={'Post an announcement'}
           />
           {announce.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={showHotelContext} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}

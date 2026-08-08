@@ -127,6 +127,26 @@ export function resolveHotelActionPropertyId(input: {
   return available.length === 1 ? available[0] : null;
 }
 
+/**
+ * Select a conversation for an action without ever falling back to another
+ * hotel's same-named conversation. The caller supplies an already-authorized
+ * visible set and this helper applies the same explicit hotel resolution used
+ * by search and new-message actions.
+ */
+export function resolveHotelConversationForAction(
+  conversations: readonly HotelConversation[],
+  input: {
+    selectedPropertyId: string | null;
+    hotelFilter: string;
+    availablePropertyIds: readonly string[];
+  },
+): HotelConversation | null {
+  const propertyId = resolveHotelActionPropertyId(input);
+  return propertyId
+    ? conversations.find((conversation) => conversation.propertyId === propertyId) ?? null
+    : null;
+}
+
 /** Hotel labels are useful only when the visible view actually spans hotels. */
 export function shouldShowHotelContext(input: {
   hotelFilter: string;

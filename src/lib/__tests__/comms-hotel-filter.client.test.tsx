@@ -9,6 +9,7 @@ import {
   hotelConversationKey,
   hotelRefreshPropertyIds,
   hotelScopeOptions,
+  resolveHotelConversationForAction,
   resolveHotelActionPropertyId,
   shouldShowHotelContext,
   sortHotelConversations,
@@ -108,6 +109,33 @@ describe('Messages hotel scope/filter composition', () => {
     assert.equal(shouldShowHotelContext({ hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A, HOTEL_B] }), true);
   });
 
+  test('announcement action never picks another hotel in All hotels mode', () => {
+    const announcements = [
+      { ...conversationsWithHotelContext(bootstrap(HOTEL_A, 'Harbor Inn'))[0], kind: 'announcement' as const },
+      { ...conversationsWithHotelContext(bootstrap(HOTEL_B, 'Lakeside Hotel'))[0], kind: 'announcement' as const },
+    ];
+    assert.equal(resolveHotelConversationForAction(announcements, {
+      selectedPropertyId: null,
+      hotelFilter: ALL_HOTELS_FILTER,
+      availablePropertyIds: [HOTEL_A, HOTEL_B],
+    }), null);
+    assert.equal(resolveHotelConversationForAction(announcements, {
+      selectedPropertyId: HOTEL_B,
+      hotelFilter: ALL_HOTELS_FILTER,
+      availablePropertyIds: [HOTEL_A, HOTEL_B],
+    })?.propertyId, HOTEL_B);
+    assert.equal(resolveHotelConversationForAction(announcements, {
+      selectedPropertyId: null,
+      hotelFilter: HOTEL_A,
+      availablePropertyIds: [HOTEL_A, HOTEL_B],
+    })?.propertyId, HOTEL_A);
+    assert.equal(resolveHotelConversationForAction(announcements, {
+      selectedPropertyId: null,
+      hotelFilter: ALL_HOTELS_FILTER,
+      availablePropertyIds: [HOTEL_A],
+    })?.propertyId, HOTEL_A);
+  });
+
   test('retry targets keep transient hotels without retrying denied hotels', () => {
     const candidates = [HOTEL_A, HOTEL_B];
     assert.deepEqual(hotelRefreshPropertyIds({
@@ -160,6 +188,8 @@ describe('Messages hotel scope/filter composition', () => {
     assert.match(source, /searchOpen && searchPropertyId && <SearchPalette pid=\{searchPropertyId\}/);
     assert.match(source, /onPick=\{\(staffId\) => void openDm\(staffId, newMessagePropertyId\)\}/);
     assert.match(source, /const showHotelContext = shouldShowHotelContext\(\{/);
+    assert.match(source, /onAdd=\{beginAnnouncement\}/);
+    assert.doesNotMatch(source, /const feed = announce\[0\]/);
     assert.match(source, /showPropertyLabel=\{showHotelContext\}/);
     assert.match(source, /const canRetry = refreshIds\.length > 0/);
     assert.match(source, /canRetry=\{canRetry\}/);
