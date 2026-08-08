@@ -32,6 +32,7 @@ import {
   hotelConversationKey,
   hotelScopeOptions,
   resolveHotelActionPropertyId,
+  shouldShowHotelContext,
   sortHotelConversations,
   visibleHotelConversations,
   type HotelBootstrap,
@@ -558,7 +559,11 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
   const closeNewMessage = () => { setShowNew(false); setNewMessagePropertyId(null); };
   const jump = (id: string, propertyId: string | null) => { if (propertyId) selectConversation(id, propertyId); closeSearch(); };
   const beginSearch = () => {
-    const propertyId = resolveHotelActionPropertyId({ selectedPropertyId: selConvo?.propertyId ?? null, hotelFilter });
+    const propertyId = resolveHotelActionPropertyId({
+      selectedPropertyId: selConvo?.propertyId ?? null,
+      hotelFilter,
+      availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+    });
     if (!propertyId) {
       actionFailed('Choose a hotel before searching Messages.');
       return;
@@ -568,7 +573,11 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
     setSearchOpen(true);
   };
   const beginNewMessage = () => {
-    const propertyId = resolveHotelActionPropertyId({ selectedPropertyId: selConvo?.propertyId ?? null, hotelFilter });
+    const propertyId = resolveHotelActionPropertyId({
+      selectedPropertyId: selConvo?.propertyId ?? null,
+      hotelFilter,
+      availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+    });
     if (!propertyId) {
       actionFailed('Choose a hotel before starting a message.');
       return;
@@ -610,7 +619,11 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
   };
   const openDm = async (staffId: string, interactionPropertyId?: string | null) => {
     const propertyId = interactionPropertyId
-      ?? resolveHotelActionPropertyId({ selectedPropertyId: selConvo?.propertyId ?? null, hotelFilter });
+      ?? resolveHotelActionPropertyId({
+        selectedPropertyId: selConvo?.propertyId ?? null,
+        hotelFilter,
+        availablePropertyIds: hotelBootstraps.map((bootstrap) => bootstrap.propertyId),
+      });
     if (!propertyId) {
       actionFailed('Choose a hotel before starting a message.');
       return;
@@ -652,15 +665,19 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
     : (boot?.onlineStaffIds ?? []).filter((id) => id !== boot?.me.staffId).length;
   const hotelOptions = hotelBootstraps.slice().sort((a, b) => a.propertyName.localeCompare(b.propertyName));
   const showHotelFilter = hotelOptions.length > 1;
+  const showHotelContext = shouldShowHotelContext({
+    hotelFilter,
+    availablePropertyIds: hotelOptions.map((hotel) => hotel.propertyId),
+  });
   const selectedHotelFailure = hotelBootstrapFailures.find((failure) => !failure.unauthorized && failure.propertyId === (hotelFilter === ALL_HOTELS_FILTER ? pid : hotelFilter));
 
   const right = mode === 'chats'
     ? (threadParent && selConvo
-        ? <ThreadPanel key={`${selConvo.propertyId}:${selConvo.id}:${threadParent.id}`} pid={selectedPid!} conversation={selConvo} parent={threadParent} showHotelContext={hotelFilter === ALL_HOTELS_FILTER} L={L} onClose={() => setThreadParent(null)} onReload={() => loadThread(false, true)} />
+        ? <ThreadPanel key={`${selConvo.propertyId}:${selConvo.id}:${threadParent.id}`} pid={selectedPid!} conversation={selConvo} parent={threadParent} showHotelContext={showHotelContext} L={L} onClose={() => setThreadParent(null)} onReload={() => loadThread(false, true)} />
         : panel === 'pinned' && selConvo
-        ? <PinnedPanel pid={selectedPid!} conversation={selConvo} showHotelContext={hotelFilter === ALL_HOTELS_FILTER} L={L} onClose={() => setPanel(null)} />
+        ? <PinnedPanel pid={selectedPid!} conversation={selConvo} showHotelContext={showHotelContext} L={L} onClose={() => setPanel(null)} />
         : panel === 'members' && selConvo
-        ? <MembersPanel pid={selectedPid!} conversation={selConvo} showHotelContext={hotelFilter === ALL_HOTELS_FILTER} online={online} L={L} onClose={() => setPanel(null)} onMessage={openDm} />
+        ? <MembersPanel pid={selectedPid!} conversation={selConvo} showHotelContext={showHotelContext} online={online} L={L} onClose={() => setPanel(null)} onMessage={openDm} />
         : null)
     : null;
 
@@ -720,14 +737,14 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
             }}
             tip={'Post an announcement'}
           />
-          {announce.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={hotelFilter === ALL_HOTELS_FILTER} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
+          {announce.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={showHotelContext} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
           {/* The palette IS the browse surface for channels, so the behavior
               stays and the tooltip stops promising something else. */}
           <SidebarSection label={'Channels'} onAdd={() => beginSearch()} tip={'Find a channel'} />
-          {channels.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={hotelFilter === ALL_HOTELS_FILTER} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
+          {channels.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={showHotelContext} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
           <SidebarSection label={'Direct messages'} onAdd={() => beginNewMessage()} tip={'Start a direct message'} />
           {dms.length === 0 && <div style={{ padding: '4px 20px', fontSize: 12, color: T.dim, fontFamily: SANS }}>{'No conversations yet'}</div>}
-          {dms.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={hotelFilter === ALL_HOTELS_FILTER} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
+          {dms.map((c) => <ConvoRow key={hotelConversationKey(c.propertyId, c.id)} c={c} showPropertyLabel={showHotelContext} active={mode === 'chats' && c.id === selId && c.propertyId === selPropertyId} online={onlineByProperty.get(c.propertyId) ?? online} onClick={() => selectConversation(c.id, c.propertyId)} L={L} />)}
         </div>
       </aside>
 
@@ -744,7 +761,7 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
             <>
               {selConvo
                 ? <MessagePane
-                    pid={selectedPid!} me={boot.me} conversation={selConvo} showHotelContext={hotelFilter === ALL_HOTELS_FILTER} messages={messages} online={online} memberCount={memberCount} L={L}
+                    pid={selectedPid!} me={boot.me} conversation={selConvo} showHotelContext={showHotelContext} messages={messages} online={online} memberCount={memberCount} L={L}
                     messagesLoading={messagesLoading} messagesError={messagesError} onRetryMessages={() => void loadThread(true, true)}
                     messagesHasOlder={messagesHasOlder} messagesOlderKnown={messagesOlderKnown}
                     messagesOlderLoading={messagesOlderLoading} messagesOlderError={messagesOlderError}
@@ -760,11 +777,11 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
       </div>
 
       {/* ── Overlays ── */}
-      {searchOpen && searchPropertyId && <SearchPalette pid={searchPropertyId} hotelName={hotelFilter === ALL_HOTELS_FILTER ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === searchPropertyId)?.propertyName : undefined} L={L} onClose={closeSearch} onJump={(id) => jump(id, searchPropertyId)} onOpenDm={(staffId) => void openDm(staffId, searchPropertyId)} />}
+      {searchOpen && searchPropertyId && <SearchPalette pid={searchPropertyId} hotelName={showHotelContext ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === searchPropertyId)?.propertyName : undefined} L={L} onClose={closeSearch} onJump={(id) => jump(id, searchPropertyId)} onOpenDm={(staffId) => void openDm(staffId, searchPropertyId)} />}
       {showNew && newMessagePropertyId && hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId) && (
         <NewMessageModal
           staff={hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId)!.data.staff}
-          hotelName={hotelFilter === ALL_HOTELS_FILTER ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId)?.propertyName : undefined}
+          hotelName={showHotelContext ? hotelBootstraps.find((bootstrap) => bootstrap.propertyId === newMessagePropertyId)?.propertyName : undefined}
           L={L}
           onPick={(staffId) => void openDm(staffId, newMessagePropertyId)}
           onClose={closeNewMessage}

@@ -9,6 +9,7 @@ import {
   hotelConversationKey,
   hotelScopeOptions,
   resolveHotelActionPropertyId,
+  shouldShowHotelContext,
   sortHotelConversations,
   visibleHotelConversations,
   type HotelBootstrap,
@@ -96,10 +97,14 @@ describe('Messages hotel scope/filter composition', () => {
   });
 
   test('pid-scoped actions require an explicit hotel in All hotels mode', () => {
-    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: HOTEL_B, hotelFilter: ALL_HOTELS_FILTER }), HOTEL_B);
-    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: HOTEL_A }), HOTEL_A);
-    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: HOTEL_B, hotelFilter: HOTEL_A }), HOTEL_A);
-    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: ALL_HOTELS_FILTER }), null);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: HOTEL_B, hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A, HOTEL_B] }), HOTEL_B);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: HOTEL_B, hotelFilter: HOTEL_A, availablePropertyIds: [HOTEL_A, HOTEL_B] }), HOTEL_A);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: HOTEL_A, availablePropertyIds: [HOTEL_B] }), null);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A] }), HOTEL_A);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A, HOTEL_B] }), null);
+    assert.equal(resolveHotelActionPropertyId({ selectedPropertyId: null, hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [] }), null);
+    assert.equal(shouldShowHotelContext({ hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A] }), false);
+    assert.equal(shouldShowHotelContext({ hotelFilter: ALL_HOTELS_FILTER, availablePropertyIds: [HOTEL_A, HOTEL_B] }), true);
   });
 
   test('new hotel selector is labeled and has a mobile-sized target', () => {
@@ -111,6 +116,8 @@ describe('Messages hotel scope/filter composition', () => {
     assert.match(source, /Choose a hotel before starting a message\./);
     assert.match(source, /searchOpen && searchPropertyId && <SearchPalette pid=\{searchPropertyId\}/);
     assert.match(source, /onPick=\{\(staffId\) => void openDm\(staffId, newMessagePropertyId\)\}/);
+    assert.match(source, /const showHotelContext = shouldShowHotelContext\(\{/);
+    assert.match(source, /showPropertyLabel=\{showHotelContext\}/);
   });
 
   test('new message overlay keeps mobile-safe input and Escape close behavior', () => {

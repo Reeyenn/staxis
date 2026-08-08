@@ -81,9 +81,23 @@ export function visibleHotelConversations(
 export function resolveHotelActionPropertyId(input: {
   selectedPropertyId: string | null;
   hotelFilter: string;
+  availablePropertyIds: readonly string[];
 }): string | null {
-  if (input.hotelFilter !== ALL_HOTELS_FILTER) return input.hotelFilter || null;
-  return input.selectedPropertyId;
+  const available = Array.from(new Set(input.availablePropertyIds));
+  if (input.hotelFilter !== ALL_HOTELS_FILTER) {
+    return input.hotelFilter && available.includes(input.hotelFilter) ? input.hotelFilter : null;
+  }
+  if (input.selectedPropertyId && available.includes(input.selectedPropertyId)) return input.selectedPropertyId;
+  return available.length === 1 ? available[0] : null;
+}
+
+/** Hotel labels are useful only when the visible view actually spans hotels. */
+export function shouldShowHotelContext(input: {
+  hotelFilter: string;
+  availablePropertyIds: readonly string[];
+}): boolean {
+  return input.hotelFilter === ALL_HOTELS_FILTER
+    && new Set(input.availablePropertyIds).size > 1;
 }
 
 /** Preserve the bootstrap's attention-first ordering across hotel buckets. */
