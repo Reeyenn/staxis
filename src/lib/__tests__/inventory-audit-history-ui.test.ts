@@ -296,8 +296,8 @@ describe('inventory audit-history financial access boundary', () => {
     assert.match(route, /isSectionEnabled\(hotel\.enabledSections \?\? null, 'financials'\)/);
     assert.match(route, /includeFinancials,/);
     assert.match(panel, /historyEventsForViewer\(events, canViewFinancials\)/);
-    assert.match(shell, /canCorrectDeliveries=\{canManage && canViewFinancials\}/);
-    assert.match(shell, /open=\{overlay === 'delivery-correction' && canManage && canViewFinancials\}/);
+    assert.match(shell, /canCorrectDeliveries=\{canManage && financialSurfaceEnabled\}/);
+    assert.match(shell, /open=\{overlay === 'delivery-correction' && canManage && financialSurfaceEnabled\}/);
     // Authorized managers keep useful financial history, but the UI reads only
     // a fixed allowlist from the server-sanitized details object.
     assert.match(panel, /canViewFinancials=\{canViewFinancials\}/);
