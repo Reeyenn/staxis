@@ -17,6 +17,9 @@ test('work orders query the live board first and load settled history on demand'
   assert.match(workOrdersTab, /historyStatus === 'ready' \? history\.length : null/);
   assert.match(workOrdersTab, /status === 'loading'/);
   assert.match(workOrdersTab, /status === 'error'/);
+  assert.match(workOrdersTab, /const \[historyReload, setHistoryReload\] = useState\(0\)/);
+  assert.match(workOrdersTab, /setHistoryReload\(\(revision\) => revision \+ 1\)/);
+  assert.doesNotMatch(workOrdersTab, /const retryHistory[\s\S]*?setTimeout/);
 });
 
 test('maintenance initial fetch errors reach the visible tabs immediately', () => {
@@ -28,6 +31,12 @@ test('maintenance initial fetch errors reach the visible tabs immediately', () =
   assert.match(workOrdersTab, /loadError \|\| gate\.status === 'error'/);
   assert.match(preventiveTab, /loadError \|\| gate\.status === 'error'/);
   assert.match(equipmentTab, /loadError \|\| gate\.status === 'error'/);
+  for (const tab of [workOrdersTab, preventiveTab, equipmentTab]) {
+    assert.match(tab, /const boardReady = loaded && !loadError/);
+    assert.match(tab, /const boardUnavailable = loadError \|\| gate\.status === 'error'/);
+    assert.match(tab, /lead=\{boardUnavailable \?\s*'Unavailable' : boardReady\s*\?/);
+    assert.match(tab, /rest=\{boardUnavailable \? '[^']+ unavailable' : boardReady\s*\?/);
+  }
 });
 
 test('maintenance board keeps property and realtime cleanup guards', () => {

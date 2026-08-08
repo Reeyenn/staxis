@@ -217,6 +217,8 @@ export function EquipmentTab() {
   // Load gate: don't render the happy "Storeroom is empty" state until the
   // first snapshot arrived; error card + retry when the load failed.
   const gate = useBoardGate(activePropertyId, 'inventory', loaded);
+  const boardReady = loaded && !loadError;
+  const boardUnavailable = loadError || gate.status === 'error';
 
   useEffect(() => {
     if (!user || !activePropertyId) {
@@ -385,8 +387,8 @@ export function EquipmentTab() {
     <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={'Equipment · storeroom'}
-        lead={lead}
-        rest={`${parts.length} ${'tracked items'}`}
+        lead={boardUnavailable ? 'Unavailable' : boardReady ? lead : 'Loading…'}
+        rest={boardUnavailable ? 'Equipment unavailable' : boardReady ? `${parts.length} ${'tracked items'}` : 'Loading…'}
         actions={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {'Add item'}</Btn>}
       />
 

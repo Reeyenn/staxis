@@ -710,6 +710,7 @@ export function WorkOrdersTab() {
   const [loadError, setLoadError] = useState(false);
   const [history, setHistory] = useState<WorkOrder[]>([]);
   const [historyStatus, setHistoryStatus] = useState<HistoryLoadState>('idle');
+  const [historyReload, setHistoryReload] = useState(0);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -734,6 +735,7 @@ export function WorkOrdersTab() {
       setOrders([]);
       setHistory([]);
       setHistoryStatus('idle');
+      setHistoryReload(0);
       setHistoryOpen(false);
       setDetailId(null);
       return;
@@ -743,6 +745,7 @@ export function WorkOrdersTab() {
     setOrders([]);
     setHistory([]);
     setHistoryStatus('idle');
+    setHistoryReload(0);
     setHistoryOpen(false);
     setDetailId(null);
     let initialSettled = false;
@@ -780,10 +783,12 @@ export function WorkOrdersTab() {
         if (!cancelled && activePropertyId === propertyId) setHistoryStatus('error');
       });
     return () => { cancelled = true; };
-  }, [historyOpen, user, activePropertyId]);
+  }, [historyOpen, user, activePropertyId, historyReload]);
 
   const open = useMemo(() => orders.filter((o) => o.status === 'open'), [orders]);
   const historyCount = historyStatus === 'ready' ? history.length : null;
+  const boardReady = loaded && !loadError;
+  const boardUnavailable = loadError || gate.status === 'error';
   const detail = detailId ? orders.find((o) => o.id === detailId) ?? null : null;
 
   // Animation B — "lift · slide · drop": FLIP the moved card from its recorded
@@ -969,12 +974,8 @@ export function WorkOrdersTab() {
     gate.retry();
   };
   const retryHistory = () => {
-    setHistoryStatus('idle');
-    setHistoryOpen(false);
-    window.setTimeout(() => {
-      setHistoryStatus('loading');
-      setHistoryOpen(true);
-    }, 0);
+    setHistoryStatus('loading');
+    setHistoryReload((revision) => revision + 1);
   };
 
   return (
@@ -998,8 +999,10 @@ export function WorkOrdersTab() {
       `}</style>
       <PageHead
         eyebrow={'Work orders · today'}
-        lead={`${open.length} ${'open'}`}
-        rest={historyCount == null ? 'History not loaded' : `${historyCount} ${'done'}`}
+        lead={boardUnavailable ? 'Unavailable' : boardReady ? `${open.length} ${'open'}` : 'Loading…'}
+        rest={boardUnavailable ? 'Work orders unavailable' : boardReady
+          ? (historyCount == null ? 'History not loaded' : `${historyCount} ${'done'}`)
+          : 'Loading…'}
         actions={<>
           <Btn size="lg" variant="ghost" onClick={() => { setHistoryStatus('loading'); setHistoryOpen(true); }}>{'History'}{historyCount == null ? '' : ` (${historyCount})`} →</Btn>
           <Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {'New work order'}</Btn>

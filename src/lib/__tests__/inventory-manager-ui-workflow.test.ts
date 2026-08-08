@@ -88,8 +88,9 @@ describe('inventory manager workflow regressions', () => {
 
   test('Ask Staxis docks in the inventory header instead of covering count controls', () => {
     const ask = source('components', 'agent', 'AskStaxisBar.tsx');
-    assert.match(ask, /onInventory \? ' asx-mobile-fab-inventory' : ''/);
-    assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-inventory\{top:[^;]+;right:68px;bottom:auto;/);
+    assert.match(ask, /className=\{`asx-mobile-fab asx-mobile-fab-docked/);
+    assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-docked\{top:[^;]+;right:68px;bottom:auto;/);
+    assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-docked\.asx-mobile-fab-open\{visibility:hidden;/);
     assert.match(ask, /width:44px;height:44px/);
     assert.match(ask, /\.asx-mobile-sheet-inventory \.asx-mobile-composer\{padding-right:12px;\}/);
   });

@@ -1367,7 +1367,7 @@ export function AskStaxisBar() {
       <button
         ref={mobileFabRef}
         type="button"
-        className={`asx-mobile-fab${mobileOpen ? ' asx-mobile-fab-open' : ''}${onInventory ? ' asx-mobile-fab-inventory' : ''}`}
+        className={`asx-mobile-fab asx-mobile-fab-docked${mobileOpen ? ' asx-mobile-fab-open' : ''}`}
         onClick={mobileOpen ? closeMobile : openMobile}
         aria-label={mobileOpen ? 'Close Staxis' : 'Ask Staxis'}
         aria-expanded={mobileOpen}
@@ -2217,13 +2217,12 @@ button.asx-notice-row:focus-visible{outline:2px solid var(--asx-brand);outline-o
   .asx-mobile-fab>svg{width:20px;height:20px;}
   .asx-mobile-fab:active{transform:scale(.96);}
   .asx-mobile-fab:focus-visible{outline:2px solid #1F231C;outline-offset:3px;}
-  /* Inventory has full-width quick-count controls down the page. Dock the
-     assistant trigger into the phone header instead of covering a row's +
-     button. The sheet itself already has a close action, so the trigger can
-     leave the focus order while that sheet is open. */
-  .asx-mobile-fab.asx-mobile-fab-inventory{top:max(6px,env(safe-area-inset-top,0px));right:68px;bottom:auto;
+  /* Keep the assistant trigger in the existing phone header lane instead of
+     covering a primary action in the page body. The sheet itself already has
+     a close action, so the trigger can leave the focus order while it is open. */
+  .asx-mobile-fab.asx-mobile-fab-docked{top:max(6px,env(safe-area-inset-top,0px));right:68px;bottom:auto;
     width:44px;height:44px;border-radius:14px;animation:none;box-shadow:0 7px 18px -10px rgba(62,92,72,.6);}
-  .asx-mobile-fab.asx-mobile-fab-inventory.asx-mobile-fab-open{visibility:hidden;}
+  .asx-mobile-fab.asx-mobile-fab-docked.asx-mobile-fab-open{visibility:hidden;}
 
   .asx-mobile-sheet{position:fixed;left:0;right:0;bottom:0;z-index:71;height:46dvh;min-height:350px;max-height:520px;
     display:flex;flex-direction:column;overflow:hidden;background:#fff;color:#1F231C;

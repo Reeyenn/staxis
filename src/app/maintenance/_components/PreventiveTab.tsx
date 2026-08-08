@@ -421,6 +421,8 @@ export function PreventiveTab() {
   // Load gate: don't render the happy "No preventive tasks yet" empty state
   // until the first snapshot arrived; error card + retry when the load failed.
   const gate = useBoardGate(activePropertyId, 'preventive_tasks', loaded);
+  const boardReady = loaded && !loadError;
+  const boardUnavailable = loadError || gate.status === 'error';
 
   useEffect(() => {
     if (!user || !activePropertyId) {
@@ -546,8 +548,12 @@ export function PreventiveTab() {
     <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={'Preventive · scheduled'}
-        lead={overdueCount > 0 ? `${overdueCount} ${'overdue'}` : ('All on track')}
-        rest={`${tasks.length} ${tasks.length === 1 ? ('recurring task') : ('recurring tasks')}`}
+        lead={boardUnavailable ? 'Unavailable' : boardReady
+          ? (overdueCount > 0 ? `${overdueCount} ${'overdue'}` : ('All on track'))
+          : 'Loading…'}
+        rest={boardUnavailable ? 'Preventive unavailable' : boardReady
+          ? `${tasks.length} ${tasks.length === 1 ? ('recurring task') : ('recurring tasks')}`
+          : 'Loading…'}
         actions={<>
           <Btn variant="ghost" onClick={() => setRegistryOpen(true)}>
             {/* This opens the asset registry, distinct from the storeroom board. */}

@@ -7,6 +7,7 @@ const source = (...parts: string[]) => readFileSync(join(process.cwd(), ...parts
 
 test('phone operations keep the assistant clear and contain dense hotel boards', () => {
   const layout = source('src', 'components', 'layout', 'AppLayout.tsx');
+  const ask = source('src', 'components', 'agent', 'AskStaxisBar.tsx');
   const css = source('src', 'app', 'globals.css');
   const housekeepingBoard = source('src', 'app', 'housekeeping', '_components', 'ScheduleBoard.tsx');
   const quality = source('src', 'app', 'housekeeping', '_components', 'QualityTab.tsx');
@@ -14,8 +15,11 @@ test('phone operations keep the assistant clear and contain dense hotel boards',
   const weekRoster = source('src', 'app', 'staff', '_components', 'schedule', 'WeekRoster.tsx');
   const schedule = source('src', 'app', 'staff', '_components', 'schedule', 'index.tsx');
 
-  assert.match(layout, /<main className="cx-swap" data-staxis-main=\{!hideGlobalAsk \? 'true' : undefined\}/);
-  assert.match(css, /\[data-staxis-main="true"\][\s\S]*?padding-bottom: calc\(104px \+ env\(safe-area-inset-bottom/);
+  assert.match(layout, /<main className="cx-swap"/);
+  assert.doesNotMatch(layout, /data-staxis-main/);
+  assert.match(ask, /className=\{`asx-mobile-fab asx-mobile-fab-docked[\s\S]*?asx-mobile-fab-open/);
+  assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-docked\{top:max\(6px,env\(safe-area-inset-top/);
+  assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-docked\.asx-mobile-fab-open\{visibility:hidden;/);
 
   assert.match(housekeepingBoard, /className="hk-schedule-board-row"/);
   assert.match(housekeepingBoard, /className="hk-schedule-board-chip"/);

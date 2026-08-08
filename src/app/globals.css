@@ -557,17 +557,6 @@ body {
   .btn { min-height: 40px; }
 }
 
-/* The global Ask Staxis trigger is intentionally fixed so it is always
-   reachable. Pages that render it get a quiet landing zone beneath their
-   content so the trigger never sits on top of the last row or primary action.
-   Pages that suppress the global trigger retain their existing mobile spacing. */
-@media (max-width: 760px) {
-  [data-staxis-main="true"] {
-    padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
-    scroll-padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
-  }
-}
-
 /* The schedule timeline is intrinsically wider than a phone because its
    hour axis needs readable intervals. Keep that width inside the card and let
    the manager pan the board itself; the page and the surrounding hotel shell
