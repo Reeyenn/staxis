@@ -90,7 +90,9 @@ interface TestState {
   accountLookupError: boolean;
   propertyOwnerAuthUserIds: string[];
   staffRows: StaffRow[];
+  staffLookupCalls: number;
   grantCalls: Array<Record<string, unknown>>;
+  guardedCreateCalls: number;
   createdAuthUsers: Array<{ id: string; email: string }>;
   auditRows: Array<Record<string, unknown>>;
   finalizeErrorCode: string | null;
@@ -147,7 +149,9 @@ function resetState(): void {
     accountLookupError: false,
     propertyOwnerAuthUserIds: [],
     staffRows: [],
+    staffLookupCalls: 0,
     grantCalls: [],
+    guardedCreateCalls: 0,
     createdAuthUsers: [],
     auditRows: [],
     finalizeErrorCode: null,
@@ -170,6 +174,20 @@ function normalizeAuthorityAtHotel(
   state.authorityMode = 'normalized';
   state.normalizedStandings = [{ propertyId: HOTEL_A, operationalRole, hotelMutationAllowed }];
   state.companyPropertyIds = [HOTEL_A];
+}
+
+function normalizeCompanyAuthority(): void {
+  caller().role = 'front_desk';
+  caller().property_access = [];
+  state.authorityMode = 'normalized';
+  state.companyPropertyIds = [HOTEL_A, HOTEL_B];
+  state.normalizedStandings = [HOTEL_A, HOTEL_B].map((propertyId) => ({
+    propertyId,
+    operationalRole: 'owner' as AppRole,
+    hotelMutationAllowed: true,
+    accessProfile: 'organization_owner' as const,
+    scopeType: 'organization' as const,
+  }));
 }
 
 function seedExistingAccount(
@@ -310,11 +328,14 @@ function installSupabaseStub(): void {
         && (!normalized
           || (state.authorityMode === 'normalized'
             && args?.p_organization_id === ORGANIZATION_A
-            && args?.p_membership_scope === 'property'
-            && propertyIds.length > 0
-            && propertyIds.every((id) => state.normalizedStandings.some(
-              (candidate) => candidate.propertyId === id,
-            ))));
+            && (args?.p_membership_scope === 'property'
+              || args?.p_membership_scope === 'company')
+            && ((args?.p_membership_scope === 'company'
+              && args?.p_covered_property_ids === null)
+              || (propertyIds.length > 0
+                && propertyIds.every((id) => state.normalizedStandings.some(
+                  (candidate) => candidate.propertyId === id,
+                ))))));
       if (!mayGrant) return { data: { ok: false, reason: 'denied' }, error: null };
       if (!target?.active) return { data: { ok: false, reason: 'not_found' }, error: null };
       if (target.role !== role && target.property_access.length > 0) {
@@ -326,7 +347,7 @@ function installSupabaseStub(): void {
       if (staffId) {
         const staff = state.staffRows.find((row) => row.id === staffId);
         const allowedStaffPropertyIds = normalized
-          ? propertyIds
+          ? propertyIds.length > 0 ? propertyIds : state.companyPropertyIds
           : [args?.p_hotel_id as string];
         if (!staff
             || !allowedStaffPropertyIds.includes(staff.property_id)
@@ -360,6 +381,7 @@ function installSupabaseStub(): void {
       };
     }
     if (fn === 'staxis_create_account_invite_guarded') {
+      state.guardedCreateCalls += 1;
       state.beforeGuardedCreate?.();
       const actor = state.accounts.find((row) => row.id === args?.p_actor_account_id);
       const normalized = args?.p_organization_id !== null;
@@ -383,12 +405,15 @@ function installSupabaseStub(): void {
         && (!normalized
           || (state.authorityMode === 'normalized'
             && args?.p_organization_id === ORGANIZATION_A
-            && args?.p_membership_scope === 'property'
-            && propertyIds.length > 0
-            && new Set(propertyIds).size === propertyIds.length
-            && propertyIds.every((id) => state.normalizedStandings.some(
-              (candidate) => candidate.propertyId === id,
-            ))));
+            && (args?.p_membership_scope === 'property'
+              || args?.p_membership_scope === 'company')
+            && ((args?.p_membership_scope === 'company'
+              && args?.p_covered_property_ids === null)
+              || (propertyIds.length > 0
+                && new Set(propertyIds).size === propertyIds.length
+                && propertyIds.every((id) => state.normalizedStandings.some(
+                  (candidate) => candidate.propertyId === id,
+                ))))));
       if (!mayGrant) return { data: { ok: false, reason: 'denied' }, error: null };
       const invite: InviteRow = {
         id: testInviteId(state.invites.length + 1),
@@ -405,7 +430,7 @@ function installSupabaseStub(): void {
         membership_scope: normalized
           ? args?.p_membership_scope as 'company' | 'property'
           : null,
-        covered_property_ids: normalized && args?.p_membership_scope === 'property'
+        covered_property_ids: normalized && Array.isArray(args?.p_covered_property_ids)
           ? propertyIds
           : null,
         target_staff_id: typeof args?.p_target_staff_id === 'string'
@@ -992,7 +1017,10 @@ function staffBuilder(): Record<string, unknown> {
       equals.set(column, value);
       return builder;
     },
-    maybeSingle: async () => ({ data: matches()[0] ?? null, error: null }),
+    maybeSingle: async () => {
+      state.staffLookupCalls += 1;
+      return { data: matches()[0] ?? null, error: null };
+    },
   };
   return builder;
 }
@@ -1310,6 +1338,71 @@ describe('POST /api/auth/invites hierarchy', () => {
     assert.equal(state.invites.at(-1)?.hotel_id, HOTEL_B);
     assert.deepEqual(state.invites.at(-1)?.covered_property_ids, [HOTEL_A, HOTEL_B]);
     assert.equal(state.invites.at(-1)?.target_staff_id, STAFF_ID);
+  });
+
+  test('a finite company invite proceeds when its anchor is in the selected coverage', async () => {
+    normalizeCompanyAuthority();
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-subset@example.test',
+      role: 'owner',
+      scope: 'company',
+      propertyIds: [HOTEL_B],
+    }));
+    assert.equal(response.status, 201);
+    assert.equal(state.guardedCreateCalls, 1);
+    assert.equal(state.invites.at(-1)?.hotel_id, HOTEL_B);
+    assert.equal(state.invites.at(-1)?.membership_scope, 'company');
+    assert.deepEqual(state.invites.at(-1)?.covered_property_ids, [HOTEL_B]);
+  });
+
+  test('a finite company invite excluding its anchor fails before staff lookup or RPC', async () => {
+    normalizeCompanyAuthority();
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-anchor-mismatch@example.test',
+      role: 'owner',
+      scope: 'company',
+      propertyIds: [HOTEL_A],
+    }));
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /anchor hotel/i);
+    assert.equal(state.staffLookupCalls, 0);
+    assert.equal(state.guardedCreateCalls, 0);
+    assert.equal(state.grantCalls.length, 0);
+    assert.equal(state.invites.length, 0);
+  });
+
+  test('company coverage mismatch with staffId fails before staff lookup', async () => {
+    normalizeCompanyAuthority();
+    seedStaff({ property_id: HOTEL_B, department: 'front_desk' });
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-staff-anchor-mismatch@example.test',
+      role: 'owner',
+      scope: 'company',
+      propertyIds: [HOTEL_A],
+      staffId: STAFF_ID,
+    }));
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /anchor hotel/i);
+    assert.equal(state.staffLookupCalls, 0);
+    assert.equal(state.guardedCreateCalls, 0);
+    assert.equal(state.grantCalls.length, 0);
+  });
+
+  test('an all-hotels company invite keeps its legacy anchor behavior', async () => {
+    normalizeCompanyAuthority();
+    const response = await createInvite(managerRequest({
+      hotelId: HOTEL_B,
+      email: 'company-all-hotels@example.test',
+      role: 'owner',
+      scope: 'company',
+    }));
+    assert.equal(response.status, 201);
+    assert.equal(state.guardedCreateCalls, 1);
+    assert.equal(state.invites.at(-1)?.hotel_id, HOTEL_B);
+    assert.equal(state.invites.at(-1)?.covered_property_ids, null);
   });
 
   test('an owner and admin can create privileged invitations', async () => {

@@ -912,6 +912,21 @@ export async function POST(req: NextRequest) {
     if (localAuthority.kind === 'denied') return authorityDenied(requestId);
   }
 
+  // An explicit company list is a finite promise. Keep the authority anchor
+  // inside that promise before touching a target staff row or either guarded
+  // writer. NULL coverage is the legacy all-hotels (including future) shape,
+  // so it intentionally keeps the existing anchor behavior.
+  const explicitCompanyAnchorMismatch = hat?.scope === 'company'
+    && hat.coveredPropertyIds !== null
+    && !hat.coveredPropertyIds.includes(hotelId);
+  if (explicitCompanyAnchorMismatch) {
+    return err('The selected access scope must include the invitation anchor hotel', {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+
   // The word the invited person's LOGIN will carry. For a company invitation
   // that is the hat degraded to the hotel vocabulary (see legacyRoleForHat);
   // for the plain hotel invitation it is the role that was asked for.
@@ -957,10 +972,9 @@ export async function POST(req: NextRequest) {
         code: ApiErrorCode.ValidationFailed,
       });
     }
-    const selectedScopeCoversCurrentHotel = !hat
-      || hat.scope === 'company'
-      || hat.propertyIds.includes(hotelId);
-    if (!selectedScopeCoversCurrentHotel) {
+    if (hat !== null
+      && hat.scope !== 'company'
+      && !hat.propertyIds.includes(hotelId)) {
       return err('The selected access scope must include the staff profile\'s hotel', {
         requestId,
         status: 400,
