@@ -55,7 +55,7 @@ test('inventory starts ordinary stock from hotel reach while sensitive controls 
   );
   assert.match(inventoryShell, /const canViewFinancials = inventoryFinancialDataEnabled\(\{[\s\S]*?contextReady: inventoryContextReady,[\s\S]*?hasCapability: can\('view_financials'\),[\s\S]*?enabledSections: activeProperty\?\.enabledSections/);
   assert.ok(
-    (inventoryShell.match(/if \(!uid \|\| !activePropertyId \|\| !inventoryViewerContextReady\) return;/g) ?? []).length >= 3,
+    (inventoryShell.match(/if \(!uid \|\| !activePropertyId \|\| !inventoryViewerContextReady/g) ?? []).length >= 2,
   );
   assert.match(
     inventoryShell,
@@ -63,7 +63,7 @@ test('inventory starts ordinary stock from hotel reach while sensitive controls 
   );
   assert.match(
     inventoryShell,
-    /const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded/,
+    /const dataReady = inventoryDataMatchesViewer && itemsLoaded/,
   );
   assert.match(
     inventoryShell,
@@ -71,7 +71,7 @@ test('inventory starts ordinary stock from hotel reach while sensitive controls 
   );
   assert.doesNotMatch(
     inventoryShell,
-    /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\) \{/,
+    /const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded/,
   );
 });
 
@@ -105,11 +105,11 @@ test('finance availability is separate from the generic inventory connection war
     /const closeDashboardPromise[\s\S]*?canViewFinancials && financialDataReady[\s\S]*?: Promise\.resolve\(null\)/,
   );
   assert.ok(
-    (inventoryShell.match(/canViewFinancials && financialDataReady/g) ?? []).length >= 4,
+    (inventoryShell.match(/financialEvidenceAttempted && financialDataReady/g) ?? []).length >= 2,
   );
   assert.match(
     inventoryShell,
-    /partialFailure: inventoryOperationalDetailsFailed\(requiredResults\)/,
+    /setProjectionLoadState\(d\.operationalFailure \? 'error' : 'ready'\)/,
   );
   assert.doesNotMatch(inventoryShell, /month close financial data is unavailable/);
 });
@@ -140,11 +140,11 @@ test('Inventory-only hotels treat finance denial and empty inventory as valid st
   // the Inventory page.
   assert.match(
     inventoryShell,
-    /const financialEvidencePromise[\s\S]*?canViewFinancials && financialDataReady[\s\S]*?\/api\/inventory\/financial-evidence/,
+    /const financialEvidencePromise[\s\S]*?financialEvidenceAttempted && financialDataReady[\s\S]*?\/api\/inventory\/financial-evidence/,
   );
   assert.match(
     inventoryShell,
-    /const closeDashboardPromise[\s\S]*?canViewFinancials && financialDataReady[\s\S]*?\/api\/inventory\/month-close/,
+    /const closeDashboardPromise[\s\S]*?financialEvidenceAttempted && financialDataReady[\s\S]*?\/api\/inventory\/month-close/,
   );
   assert.match(inventoryShell, /canViewFinancials && financialDataReady[\s\S]*?listInventoryBudgets/);
   assert.match(inventoryShell, /open=\{overlay === 'reports' && canViewFinancials\}/);

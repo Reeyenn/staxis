@@ -410,6 +410,7 @@ export function PreventiveTab() {
 
   const [tasks, setTasks] = useState<PreventiveTask[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
   const [registryOpen, setRegistryOpen] = useState(false);
@@ -422,12 +423,28 @@ export function PreventiveTab() {
   const gate = useBoardGate(activePropertyId, 'preventive_tasks', loaded);
 
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId) {
+      setLoaded(false);
+      setLoadError(false);
+      setTasks([]);
+      setSelId(null);
+      return;
+    }
     setLoaded(false);
-    const unsub = subscribeToPreventiveTasks(user.uid, activePropertyId, (rows) => {
-      setLoaded(true);
-      setTasks(rows);
-    });
+    setLoadError(false);
+    setTasks([]);
+    let initialSettled = false;
+    const unsub = subscribeToPreventiveTasks(
+      user.uid,
+      activePropertyId,
+      (rows) => {
+        initialSettled = true;
+        setLoaded(true);
+        setLoadError(false);
+        setTasks(rows);
+      },
+      () => { if (!initialSettled) setLoadError(true); },
+    );
     return () => unsub();
   }, [user, activePropertyId, gate.retryKey]);
 
@@ -540,8 +557,8 @@ export function PreventiveTab() {
         </>}
       />
 
-      {gate.status === 'error' ? (
-        <BoardLoadError es={es} onRetry={gate.retry} />
+      {loadError || gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={() => { setLoadError(false); gate.retry(); }} />
       ) : gate.status === 'loading' ? (
         <BoardLoading es={es} />
       ) : tasks.length === 0 ? (

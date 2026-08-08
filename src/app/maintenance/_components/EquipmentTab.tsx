@@ -207,6 +207,7 @@ export function EquipmentTab() {
 
   const [items, setItems] = useState<InventoryItem[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -218,12 +219,28 @@ export function EquipmentTab() {
   const gate = useBoardGate(activePropertyId, 'inventory', loaded);
 
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId) {
+      setLoaded(false);
+      setLoadError(false);
+      setItems([]);
+      setSelId(null);
+      return;
+    }
     setLoaded(false);
-    const unsub = subscribeToInventory(user.uid, activePropertyId, (rows) => {
-      setLoaded(true);
-      setItems(rows);
-    });
+    setLoadError(false);
+    setItems([]);
+    let initialSettled = false;
+    const unsub = subscribeToInventory(
+      user.uid,
+      activePropertyId,
+      (rows) => {
+        initialSettled = true;
+        setLoaded(true);
+        setLoadError(false);
+        setItems(rows);
+      },
+      () => { if (!initialSettled) setLoadError(true); },
+    );
     return () => unsub();
   }, [user, activePropertyId, gate.retryKey]);
 
@@ -373,8 +390,8 @@ export function EquipmentTab() {
         actions={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {'Add item'}</Btn>}
       />
 
-      {gate.status === 'error' ? (
-        <BoardLoadError es={es} onRetry={gate.retry} />
+      {loadError || gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={() => { setLoadError(false); gate.retry(); }} />
       ) : gate.status === 'loading' ? (
         <BoardLoading es={es} />
       ) : parts.length === 0 ? (

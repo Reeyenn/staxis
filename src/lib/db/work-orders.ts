@@ -20,6 +20,10 @@ export function subscribeToWorkOrders(
       const { data, error } = await supabase
         .from('work_orders').select('*')
         .eq('property_id', pid)
+        // Keep the first snapshot limited to live work. Resolved and closed
+        // tickets are fetched separately when a manager opens History so a
+        // large old ledger never blocks the current board.
+        .or('status.is.null,status.not.in.(resolved,closed)')
         .order('created_at', { ascending: false });
       if (error) throw error;
       return (data ?? []).map(fromWorkOrderRow);
@@ -29,6 +33,20 @@ export function subscribeToWorkOrders(
     undefined,
     onError,
   );
+}
+
+/** Load settled work orders only when the manager asks for History. */
+export async function listWorkOrderHistory(
+  _uid: string,
+  pid: string,
+): Promise<WorkOrder[]> {
+  const { data, error } = await supabase
+    .from('work_orders').select('*')
+    .eq('property_id', pid)
+    .in('status', ['resolved', 'closed'])
+    .order('resolved_at', { ascending: false, nullsFirst: false });
+  if (error) throw error;
+  return (data ?? []).map(fromWorkOrderRow);
 }
 
 export async function addWorkOrder(

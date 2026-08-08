@@ -179,6 +179,27 @@ interface InventoryCurrentMonthSpend {
   complete: boolean;
 }
 
+type InventoryBoardPhase = 'operational' | 'secondary' | 'all';
+type InventoryLoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+interface InventoryBoardData {
+  requestScope: InventoryFinancialRequestScope;
+  financialEvidence: InventoryFinancialEvidence | null;
+  financialEvidenceAttempted: boolean;
+  occ: OccupancyBundle | null;
+  avg: DailyAverages | null;
+  ct: InventoryCount[] | null;
+  deliveryRows: EffectiveInventoryDelivery[] | null;
+  lossRows: InventoryDiscard[] | null;
+  bd: InventoryBudget[] | null;
+  sec: InventoryBudgetSection[] | null;
+  spend: InventoryCurrentMonthSpend | null;
+  closeDashboard: InventoryMonthCloseDashboard | null;
+  cats: InventoryCustomCategory[] | null;
+  operationalFailure: boolean;
+  secondaryFailure: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -458,16 +479,25 @@ export function InventoryShell() {
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [stockLossItem, setStockLossItem] = useState<InventoryItem | null>(null);
   const [deliveryCorrection, setDeliveryCorrection] = useState<EffectiveInventoryDelivery | null>(null);
-  // Initial-load gate: the page reveals ONCE, after both the first items
-  // snapshot AND the stats bundle have landed. Without this, the 3-4 fetch
-  // waves each reshuffled/re-animated the freshly-mounted board — the
-  // "everything reloads five times" bug.
+  // Initial-load gate: the operational board reveals once the first item
+  // snapshot has landed. Projection, history, and financial reads continue in
+  // their own phases so a slow secondary source cannot hide usable stock work.
   const [itemsLoaded, setItemsLoaded] = useState(false);
-  const [bundleLoaded, setBundleLoaded] = useState(false);
   const [inventoryDataViewerKey, setInventoryDataViewerKey] = useState<string | null>(null);
   const [itemsLoadError, setItemsLoadError] = useState(false);
   const [bundleLoadError, setBundleLoadError] = useState(false);
+  const [projectionLoadState, setProjectionLoadState] = useState<InventoryLoadState>('idle');
+  const [secondaryLoadState, setSecondaryLoadState] = useState<InventoryLoadState>('idle');
+  const [financialLoadState, setFinancialLoadState] = useState<InventoryLoadState>(
+    canViewFinancials ? 'idle' : 'ready',
+  );
+  // A finance-capable viewer must never see a transient $0 shelf value while
+  // the server-gated cost evidence is still loading (or was denied). The
+  // operational item snapshot intentionally contains no cost columns.
+  const [financialEvidenceReady, setFinancialEvidenceReady] = useState(!canViewFinancials);
   const [inventoryReload, setInventoryReload] = useState(0);
+  const [projectionReload, setProjectionReload] = useState(0);
+  const [secondaryReload, setSecondaryReload] = useState(0);
   const [quickCountError, setQuickCountError] = useState(false);
   const [quickCountLockedIds, setQuickCountLockedIds] = useState<Set<string>>(() => new Set());
   const [auditEvents, setAuditEvents] = useState<InventoryAuditEvent[]>([]);
@@ -482,7 +512,9 @@ export function InventoryShell() {
   // the manager can open the same delivery again.
   const [auditDeliveryLookupRevision, setAuditDeliveryLookupRevision] = useState(0);
   const auditLoadSequence = React.useRef(0);
-  const boardLoadSequence = React.useRef(0);
+  const projectionLoadSequence = React.useRef(0);
+  const secondaryLoadSequence = React.useRef(0);
+  const refreshLoadSequence = React.useRef(0);
   // A successful first page is a same-property snapshot that can stay visible
   // while the next open revalidates it. The property/capability lifecycle effect
   // below clears this tag before a different response shape may be requested.
@@ -504,6 +536,26 @@ export function InventoryShell() {
     // Invalidate in-flight pages and retag the empty state on every property
     // lifecycle transition, including a temporary/null selection. The render
     // guard below hides the old property synchronously before this effect runs.
+    projectionLoadSequence.current += 1;
+    secondaryLoadSequence.current += 1;
+    refreshLoadSequence.current += 1;
+    financialEvidenceRef.current = EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
+    setFinancialEvidenceReady(!canViewFinancials);
+    setFinancialLoadState(canViewFinancials ? 'idle' : 'ready');
+    if (!canViewFinancials) {
+      // A capability can be revoked without a property switch. Strip any
+      // previously hydrated money immediately; hiding the controls alone would
+      // leave stale costs in item/history state for an overlay or late render.
+      setItems((current) => hydrateInventoryItems(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.inventory));
+      setCounts((current) => hydrateInventoryCounts(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.counts));
+      setDeliveries((current) => hydrateInventoryDeliveries(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.orders));
+      setDiscards((current) => hydrateInventoryDiscards(current, EMPTY_INVENTORY_FINANCIAL_EVIDENCE.discards));
+      setBudgets([]);
+      setBudgetSections([]);
+      setSpendDetail({ total: 0, complete: false });
+      setSpendDataAvailable(false);
+      setMonthCloseDashboard(null);
+    }
     auditLoadSequence.current += 1;
     auditSnapshotPropertyIdRef.current = null;
     setAuditPropertyId(uid ? activePropertyId : null);
@@ -517,7 +569,6 @@ export function InventoryShell() {
   useEffect(() => {
     if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     setInventoryDataViewerKey(capabilityViewerKey);
-    financialEvidenceRef.current = EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
     setItems([]);
     setOccupancy(null);
     setAverages(null);
@@ -534,9 +585,10 @@ export function InventoryShell() {
     setMonthCloseDashboard(null);
     setCustomCategories([]);
     setItemsLoaded(false);
-    setBundleLoaded(false);
     setItemsLoadError(false);
     setBundleLoadError(false);
+    setProjectionLoadState('idle');
+    setSecondaryLoadState('idle');
     let disposed = false;
     let initialSettled = false;
     let retryTimer: number | null = null;
@@ -593,12 +645,16 @@ export function InventoryShell() {
     };
   }, [uid, activePropertyId, capabilityViewerKey, inventoryViewerContextReady, inventoryReload]);
 
-  // ONE assembly of the board's data fetch — shared by the initial-load effect
-  // and refreshData so the two query sets can never drift apart.
-  // Manual page: fetch occupancy + daily averages (needed for the rule-based
-  // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
-  // no auto-fill map, no ai-status/ai-mode call.
-  const fetchBoardData = useCallback(async (uid: string, pid: string) => {
+  // ONE assembly of the board's data fetch — shared by the initial-load phases
+  // and refreshData so the query sets can never drift apart. The operational
+  // phase is deliberately small (occupancy + daily averages); history,
+  // categories, and finance are secondary and never block the stock board.
+  // No ML predicted-rate fetch, no auto-fill map, no ai-status/ai-mode call.
+  const fetchBoardData = useCallback(async (
+    uid: string,
+    pid: string,
+    phase: InventoryBoardPhase,
+  ): Promise<InventoryBoardData> => {
     const requestScope: InventoryFinancialRequestScope = {
       propertyId: pid,
       viewerKey: `${uid}:${pid}`,
@@ -612,11 +668,14 @@ export function InventoryShell() {
         return null;
       }
     };
+    const loadOperational = phase !== 'secondary';
+    const loadSecondary = phase !== 'operational';
     const financialDataReady = !canViewFinancials || financialTimezoneValid;
     // Never calculate hotel money in a UTC fallback when its stored timezone
     // is invalid. Physical inventory remains available; finance sources are
     // marked unavailable and can be retried after configuration is fixed.
-    const financialEvidencePromise: Promise<InventoryFinancialEvidence | null> = canViewFinancials && financialDataReady
+    const financialEvidenceAttempted = loadSecondary && canViewFinancials;
+    const financialEvidencePromise: Promise<InventoryFinancialEvidence | null> = financialEvidenceAttempted && financialDataReady
       ? fetchWithAuth(`/api/inventory/financial-evidence?propertyId=${encodeURIComponent(pid)}`, {
           cache: 'no-store',
         }).then(async (response) => {
@@ -630,7 +689,7 @@ export function InventoryShell() {
           return evidence;
         })
       : Promise.resolve(null);
-    const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = canViewFinancials && financialDataReady
+    const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = financialEvidenceAttempted && financialDataReady
       ? fetchWithAuth(`/api/inventory/month-close?propertyId=${encodeURIComponent(pid)}`, { cache: 'no-store' })
           .then(async (response) => {
             if (response.status === 401 || response.status === 403) return null;
@@ -640,29 +699,50 @@ export function InventoryShell() {
             return dashboard;
           })
       : Promise.resolve(null);
-    const [occ, avg, ctRaw, deliveryRowsRaw, lossRowsRaw, financialEvidence, bd, sec, closeDashboard, cats] = await Promise.all([
-      safe('occupancy', fetchOccupancyBundle(pid, daysAgo(14))),
-      safe('daily averages', fetchDailyAverages(pid, 14)),
-      // A 40-item hotel counting daily generates 1,120 rows in four weeks.
-      // Keep enough local history for a full field-test month rather than
-      // silently truncating the reconciliation timeline after five saves.
-      safe('counts', listInventoryCounts(uid, pid, 2000)),
-      safe('delivery history', listEffectiveInventoryDeliveries(uid, pid, 200, canViewFinancials)),
-      safe('loss history', listInventoryDiscards(uid, pid, 2_000)),
-      safe('financial evidence', financialEvidencePromise),
-      // Budget + spend are money — only fetch them for the money capability
-      // so the dollar figures never reach a line-staff browser.
-      canViewFinancials && financialDataReady
-        ? safe('budgets', listInventoryBudgets(uid, pid))
-        : Promise.resolve(canViewFinancials ? null : [] as InventoryBudget[]),
-      canViewFinancials && financialDataReady
-        ? safe('budget sections', listInventoryBudgetSections(uid, pid))
-        : Promise.resolve(canViewFinancials ? null : [] as InventoryBudgetSection[]),
-      canViewFinancials && financialDataReady ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
-      // Custom category tabs are not money — everyone who can see inventory
-      // sees the tabs.
-      safe('custom categories', listInventoryCustomCategories(uid, pid)),
-    ]);
+    type OperationalPayload = [OccupancyBundle | null, DailyAverages | null];
+    type SecondaryPayload = [
+      InventoryCount[] | null,
+      EffectiveInventoryDelivery[] | null,
+      InventoryDiscard[] | null,
+      InventoryFinancialEvidence | null,
+      InventoryBudget[] | null,
+      InventoryBudgetSection[] | null,
+      InventoryMonthCloseDashboard | null,
+      InventoryCustomCategory[] | null,
+    ];
+    const operationalPromise: Promise<OperationalPayload> = loadOperational
+      ? Promise.all([
+          safe('occupancy', fetchOccupancyBundle(pid, daysAgo(14))),
+          safe('daily averages', fetchDailyAverages(pid, 14)),
+        ])
+      : Promise.resolve<OperationalPayload>([null, null]);
+    const secondaryPromise: Promise<SecondaryPayload> = loadSecondary
+      ? Promise.all([
+          // A 40-item hotel counting daily generates 1,120 rows in four weeks.
+          // Keep enough local history for a full field-test month rather than
+          // silently truncating the reconciliation timeline after five saves.
+          safe('counts', listInventoryCounts(uid, pid, 2000)),
+          safe('delivery history', listEffectiveInventoryDeliveries(uid, pid, 200, canViewFinancials)),
+          safe('loss history', listInventoryDiscards(uid, pid, 2_000)),
+          safe('financial evidence', financialEvidencePromise),
+          // Budget + spend are money — only fetch them for the money capability
+          // so the dollar figures never reach a line-staff browser.
+          canViewFinancials && financialDataReady
+            ? safe('budgets', listInventoryBudgets(uid, pid))
+            : Promise.resolve(canViewFinancials ? null : [] as InventoryBudget[]),
+          canViewFinancials && financialDataReady
+            ? safe('budget sections', listInventoryBudgetSections(uid, pid))
+            : Promise.resolve(canViewFinancials ? null : [] as InventoryBudgetSection[]),
+          canViewFinancials && financialDataReady ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
+          // Custom category tabs are not money — everyone who can see inventory
+          // sees the tabs.
+          safe('custom categories', listInventoryCustomCategories(uid, pid)),
+        ])
+      : Promise.resolve<SecondaryPayload>([null, null, null, null, null, null, null, null]);
+    const [
+      [occ, avg],
+      [ctRaw, deliveryRowsRaw, lossRowsRaw, financialEvidence, bd, sec, closeDashboard, cats],
+    ] = await Promise.all([operationalPromise, secondaryPromise]);
     const ct = ctRaw == null
       ? null
       : hydrateInventoryCounts(ctRaw, financialEvidence?.counts ?? {});
@@ -680,22 +760,32 @@ export function InventoryShell() {
           total: 0,
           complete: true,
         };
-    const requiredResults = [occ, avg, ct, deliveryRows, lossRows, cats];
+    const operationalFailure = loadOperational && inventoryOperationalDetailsFailed([occ, avg]);
+    const secondaryFailure = loadSecondary
+      && inventoryOperationalDetailsFailed([ct, deliveryRows, lossRows, cats]);
     // Finance panels expose their own unavailable/pending states. A failed or
     // intentionally skipped finance source must not masquerade as a failure of
     // the operational inventory connection.
     return {
       requestScope,
+      financialEvidenceAttempted,
       financialEvidence,
       occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats,
-      partialFailure: inventoryOperationalDetailsFailed(requiredResults),
+      operationalFailure,
+      secondaryFailure,
     };
   }, [canViewFinancials, financialTimezoneValid]);
 
-  const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
-    const financialEvidence = d.financialEvidence ?? EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
-    financialEvidenceRef.current = financialEvidence;
-    setItems((current) => hydrateInventoryItems(current, financialEvidence.inventory));
+  const applyBoardData = useCallback((d: InventoryBoardData) => {
+    if (d.financialEvidenceAttempted) {
+      const financialEvidence = d.financialEvidence ?? EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
+      // A denied or failed finance response must clear a previously authorized
+      // cost snapshot. This is a capability boundary, not an ordinary retry.
+      financialEvidenceRef.current = financialEvidence;
+      setFinancialEvidenceReady(d.financialEvidence != null || !canViewFinancials);
+      setFinancialLoadState(d.financialEvidence != null ? 'ready' : 'error');
+      setItems((current) => hydrateInventoryItems(current, financialEvidence.inventory));
+    }
     if (d.occ != null) setOccupancy(d.occ);
     if (d.avg != null) setAverages(d.avg);
     if (d.ct != null) setCounts(d.ct);
@@ -703,48 +793,88 @@ export function InventoryShell() {
     if (d.lossRows != null) setDiscards(d.lossRows);
     if (d.bd != null) setBudgets(d.bd);
     if (d.sec != null) setBudgetSections(d.sec);
-    if (d.spend != null) {
+    if (d.spend != null && d.financialEvidenceAttempted) {
       setSpendDetail(d.spend);
       setSpendDataAvailable(true);
-    } else {
+    } else if (d.financialEvidenceAttempted) {
       setSpendDataAvailable(false);
     }
     if (d.closeDashboard != null) setMonthCloseDashboard(d.closeDashboard);
     if (d.cats != null) setCustomCategories(d.cats);
-  }, []);
+  }, [canViewFinancials]);
 
+  // Occupancy and projection data is intentionally a separate phase. The item
+  // snapshot already gives operators a truthful stock list, so a slow PMS or
+  // usage query cannot hide that work.
   useEffect(() => {
-    if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
+    if (!uid || !activePropertyId || !inventoryViewerContextReady || !itemsLoaded) return;
     let cancelled = false;
-    const sequence = ++boardLoadSequence.current;
-    setBundleLoaded(false);
-    setBundleLoadError(false);
+    const sequence = ++projectionLoadSequence.current;
+    setProjectionLoadState('loading');
 
     void (async () => {
       try {
-        const d = await withPromiseDeadline(fetchBoardData(uid, activePropertyId), {
+        const d = await withPromiseDeadline(fetchBoardData(uid, activePropertyId, 'operational'), {
           timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
-          label: 'Inventory details',
+          label: 'Inventory projections',
         });
         if (
           cancelled
-          || sequence !== boardLoadSequence.current
+          || sequence !== projectionLoadSequence.current
           || !inventoryBoardRequestIsCurrent(d.requestScope, boardRequestScopeRef.current)
         ) return;
         applyBoardData(d);
-        setBundleLoadError(d.partialFailure);
+        setProjectionLoadState(d.operationalFailure ? 'error' : 'ready');
       } catch (err) {
-        console.error('[inventory] data load failed', err);
-        if (!cancelled && sequence === boardLoadSequence.current) setBundleLoadError(true);
-      } finally {
-        if (!cancelled && sequence === boardLoadSequence.current) setBundleLoaded(true);
+        console.error('[inventory] projection load failed', err);
+        if (!cancelled && sequence === projectionLoadSequence.current) setProjectionLoadState('error');
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData, inventoryReload]);
+  }, [uid, activePropertyId, inventoryViewerContextReady, itemsLoaded, fetchBoardData, applyBoardData, projectionReload]);
+
+  // Counts, deliveries, losses, custom tabs, and finance are secondary to the
+  // stock board. They load after the first item snapshot and retain explicit
+  // error/pending semantics instead of masquerading as empty arrays.
+  useEffect(() => {
+    if (!uid || !activePropertyId || !inventoryViewerContextReady || !itemsLoaded) return;
+    let cancelled = false;
+    const sequence = ++secondaryLoadSequence.current;
+    setSecondaryLoadState('loading');
+    if (canViewFinancials) setFinancialLoadState('loading');
+    setBundleLoadError(false);
+
+    void (async () => {
+      try {
+        const d = await withPromiseDeadline(fetchBoardData(uid, activePropertyId, 'secondary'), {
+          timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
+          label: 'Inventory secondary details',
+        });
+        if (
+          cancelled
+          || sequence !== secondaryLoadSequence.current
+          || !inventoryBoardRequestIsCurrent(d.requestScope, boardRequestScopeRef.current)
+        ) return;
+        applyBoardData(d);
+        setSecondaryLoadState(d.secondaryFailure ? 'error' : 'ready');
+        setBundleLoadError(d.secondaryFailure);
+      } catch (err) {
+        console.error('[inventory] secondary data load failed', err);
+        if (!cancelled && sequence === secondaryLoadSequence.current) {
+          setSecondaryLoadState('error');
+          if (canViewFinancials) setFinancialLoadState('error');
+          setBundleLoadError(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, activePropertyId, inventoryViewerContextReady, itemsLoaded, canViewFinancials, fetchBoardData, applyBoardData, secondaryReload]);
 
   const loadAuditHistory = useCallback(async (cursor: string | null, append: boolean) => {
     const propertyId = activePropertyId;
@@ -929,7 +1059,11 @@ export function InventoryShell() {
   // counts; it doesn't drift with occupancy). Live-updates as quick counts land,
   // since applyDraft rewrites `value` for drafted items.
   const shelfValue = useMemo(() => effectiveDisplay.reduce((s, d) => s + d.value, 0), [effectiveDisplay]);
-  const shelfMissingPriceItems = useMemo(() => missingPriceItemNames(effectiveDisplay), [effectiveDisplay]);
+  const shelfValueAvailable = !canViewFinancials || financialEvidenceReady;
+  const shelfMissingPriceItems = useMemo(
+    () => shelfValueAvailable ? missingPriceItemNames(effectiveDisplay) : [],
+    [effectiveDisplay, shelfValueAvailable],
+  );
   const shelfValueComplete = shelfMissingPriceItems.length === 0;
   // Per-tab valuation for the masthead: selecting a tab (General / Breakfast /
   // a custom tab) slides that tab's total value in to the left of "On the
@@ -944,10 +1078,10 @@ export function InventoryShell() {
     [activeTab, bucket, effectiveDisplay],
   );
   const activeTabMissingPriceItems = useMemo(
-    () => !activeTab
+    () => !activeTab || !shelfValueAvailable
       ? []
       : missingPriceItemNames(effectiveDisplay.filter((d) => inBucket(d, bucket))),
-    [activeTab, bucket, effectiveDisplay],
+    [activeTab, bucket, effectiveDisplay, shelfValueAvailable],
   );
   const activeTabValueComplete = activeTabMissingPriceItems.length === 0;
   // Defaults for the Add-item sheet, honoring the hotel's visible tabs: an
@@ -1023,7 +1157,7 @@ export function InventoryShell() {
     ),
     [counts, deliveries, items, canViewFinancials, monthCloseDashboard, propertyTimezone, discards],
   );
-  const historyCount = historyEvents.length;
+  const historyCount = secondaryLoadState === 'ready' ? historyEvents.length : null;
 
   const actualPeriods: InventoryBudgetActualPeriod[] = useMemo(
     () => monthCloseDashboard
@@ -1456,26 +1590,44 @@ export function InventoryShell() {
   const refreshData = useCallback(async () => {
     if (!uid || !activePropertyId || !inventoryViewerContextReady) return;
     const requestedPropertyId = activePropertyId;
-    const sequence = ++boardLoadSequence.current;
+    const projectionSequence = ++projectionLoadSequence.current;
+    const secondarySequence = ++secondaryLoadSequence.current;
+    const refreshSequence = ++refreshLoadSequence.current;
+    setProjectionLoadState('loading');
+    setSecondaryLoadState('loading');
+    if (canViewFinancials) setFinancialLoadState('loading');
+    setBundleLoadError(false);
     try {
-      const data = await withPromiseDeadline(fetchBoardData(uid, requestedPropertyId), {
+      const data = await withPromiseDeadline(fetchBoardData(uid, requestedPropertyId, 'all'), {
         timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
         label: 'Inventory details',
       });
       if (
-        sequence !== boardLoadSequence.current
+        projectionSequence !== projectionLoadSequence.current
+        || secondarySequence !== secondaryLoadSequence.current
+        || refreshSequence !== refreshLoadSequence.current
         || activePropertyIdRef.current !== requestedPropertyId
         || !inventoryBoardRequestIsCurrent(data.requestScope, boardRequestScopeRef.current)
       ) return;
       applyBoardData(data);
-      setBundleLoadError(data.partialFailure);
+      setProjectionLoadState(data.operationalFailure ? 'error' : 'ready');
+      setSecondaryLoadState(data.secondaryFailure ? 'error' : 'ready');
+      setBundleLoadError(data.secondaryFailure);
     } catch (err) {
       console.error('[inventory] refresh failed', err);
-      if (sequence === boardLoadSequence.current && activePropertyIdRef.current === requestedPropertyId) {
+      if (
+        projectionSequence === projectionLoadSequence.current
+        && secondarySequence === secondaryLoadSequence.current
+        && refreshSequence === refreshLoadSequence.current
+        && activePropertyIdRef.current === requestedPropertyId
+      ) {
+        setProjectionLoadState('error');
+        setSecondaryLoadState('error');
+        if (canViewFinancials) setFinancialLoadState('error');
         setBundleLoadError(true);
       }
     }
-  }, [uid, activePropertyId, inventoryViewerContextReady, fetchBoardData, applyBoardData]);
+  }, [uid, activePropertyId, inventoryViewerContextReady, canViewFinancials, fetchBoardData, applyBoardData]);
 
   // ── Custom category tabs (0307) — add / delete ──────────────────────
   const addCustomCategory = useCallback(async (name: string) => {
@@ -1622,15 +1774,14 @@ export function InventoryShell() {
   }, [persistLayout, tabLayout]);
 
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
-  // cascade — ONCE. `revealed` is a one-way latch: it flips true only when the
-  // initial item snapshot and the bounded board bundle have reached a terminal
-  // result, and never flips back. Auth-token
+  // cascade — ONCE. `revealed` is a one-way latch: it flips true as soon as the
+  // initial operational item snapshot is ready, and never flips back. Auth-token
   // refreshes transiently null the user; without the latch each blip
   // unmounted the whole board back to the loading branch and replayed the
   // entrance — the "UI pops up over and over" bug.
   const inventoryDataMatchesViewer = inventoryViewerContextReady
     && inventoryDataViewerKey === capabilityViewerKey;
-  const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;
+  const dataReady = inventoryDataMatchesViewer && itemsLoaded;
   const [revealed, setRevealed] = useState(false);
   useEffect(() => { if (dataReady) setRevealed(true); }, [dataReady]);
   const pageRef = useRiseIn<HTMLDivElement>([revealed], { step: 75, dist: 16 });
@@ -1706,7 +1857,84 @@ export function InventoryShell() {
           <span>{tx.detailsLoadFailed}</span>
           <button
             type="button"
-            onClick={() => setInventoryReload((n) => n + 1)}
+            onClick={() => {
+              setSecondaryReload((n) => n + 1);
+              if (projectionLoadState === 'error') setProjectionReload((n) => n + 1);
+            }}
+            style={{
+              flex: 'none', minHeight: 44, border: `1px solid ${T.gold}88`, borderRadius: 8,
+              padding: '6px 10px', background: T.bg, color: T.ink,
+              fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {tx.retry}
+          </button>
+        </div>
+      )}
+
+      {projectionLoadState === 'loading' && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            margin: '0 4px 14px', padding: '9px 14px', borderRadius: 10,
+            background: 'rgba(92,122,96,0.08)', color: T.ink2, fontSize: 12.5,
+          }}
+        >
+          {'Updating usage estimates… Stock counts are ready to use.'}
+        </div>
+      )}
+
+      {projectionLoadState === 'error' && (
+        <div
+          role="alert"
+          style={{
+            margin: '0 4px 14px', padding: '10px 14px', borderRadius: 10,
+            border: `1px solid ${T.gold}66`, background: T.goldDim, color: T.ink,
+            fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          }}
+        >
+          <span>{'Usage estimates are unavailable. Stock counts are current; retry for updated projections.'}</span>
+          <button
+            type="button"
+            onClick={() => setProjectionReload((n) => n + 1)}
+            style={{
+              flex: 'none', minHeight: 44, border: `1px solid ${T.gold}88`, borderRadius: 8,
+              padding: '6px 10px', background: T.bg, color: T.ink,
+              fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {tx.retry}
+          </button>
+        </div>
+      )}
+
+      {secondaryLoadState === 'loading' && (
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            margin: '0 4px 14px', padding: '9px 14px', borderRadius: 10,
+            background: 'rgba(31,35,28,0.04)', color: T.ink2, fontSize: 12.5,
+          }}
+        >
+          {'Loading inventory history and financial details…'}
+        </div>
+      )}
+
+      {canViewFinancials && financialLoadState === 'error' && secondaryLoadState !== 'error' && (
+        <div
+          role="alert"
+          style={{
+            margin: '0 4px 14px', padding: '10px 14px', borderRadius: 10,
+            border: `1px solid ${T.gold}66`, background: T.goldDim, color: T.ink,
+            fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          }}
+        >
+          <span>{'Financial details are unavailable. Stock and history remain usable; retry for current costs.'}</span>
+          <button
+            type="button"
+            onClick={() => setSecondaryReload((n) => n + 1)}
             style={{
               flex: 'none', minHeight: 44, border: `1px solid ${T.gold}88`, borderRadius: 8,
               padding: '6px 10px', background: T.bg, color: T.ink,
@@ -1791,6 +2019,7 @@ export function InventoryShell() {
         tabs={visibleTabs}
         stockHealth={stockHealth}
         shelfValue={shelfValue}
+        shelfValueAvailable={shelfValueAvailable}
         canManage={canManage}
         canViewFinancials={canViewFinancials}
         onAction={openOverlay}
@@ -1865,8 +2094,10 @@ export function InventoryShell() {
                 <div ref={tabStatInnerRef} style={{ minWidth: 'max-content' }}>
                   <HStat eyebrow={tabStat.label}>
                     <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                      <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
-                      {!activeTabValueComplete && (
+                      {shelfValueAvailable
+                        ? <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
+                        : <span aria-label="Shelf value unavailable">—</span>}
+                      {shelfValueAvailable && !activeTabValueComplete && (
                         <ShelfValueWarning
                           label={tx.shelfCostsMissing}
                           intro={tx.shelfValueWarningIntro}
@@ -1885,8 +2116,10 @@ export function InventoryShell() {
           {canViewFinancials && (
             <HStat eyebrow={tx.onTheShelf}>
               <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-                <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
-                {!shelfValueComplete && (
+                {shelfValueAvailable
+                  ? <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
+                  : <span aria-label="Shelf value unavailable">—</span>}
+                {shelfValueAvailable && !shelfValueComplete && (
                   <ShelfValueWarning
                     label={tx.shelfCostsMissing}
                     intro={tx.shelfValueWarningIntro}

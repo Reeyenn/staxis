@@ -15,7 +15,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import {
-  subscribeToWorkOrders, addWorkOrder, markWorkOrderDone, updateWorkOrder,
+  subscribeToWorkOrders, listWorkOrderHistory, addWorkOrder, markWorkOrderDone, updateWorkOrder,
 } from '@/lib/db';
 import type { WorkOrder, WorkOrderPriority } from '@/types';
 import {
@@ -616,18 +616,47 @@ function DetailModal({
 // into the only place anybody would go to check what it did. The words come
 // from workOrderEnding / workOrderHistoryCount so they can be asserted without
 // rendering anything.
-function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () => void; done: WorkOrder[]; es: boolean }) {
+type HistoryLoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+function HistoryModal({
+  open, onClose, done, status, onRetry, es,
+}: {
+  open: boolean;
+  onClose: () => void;
+  done: WorkOrder[];
+  status: HistoryLoadState;
+  onRetry: () => void;
+  es: boolean;
+}) {
   const cols = '120px 1fr 130px 96px 96px';
   const repairs = done.filter((w) => workOrderEnding(w.settledAs).countsAsRepair).length;
+  const subtitle = status === 'ready'
+    ? workOrderHistoryCount(repairs, done.length - repairs)
+    : status === 'loading'
+      ? 'Loading history…'
+      : status === 'error'
+        ? 'History unavailable'
+        : 'Open to load history';
   return (
     <Modal
       open={open} onClose={onClose}
       title={'Work order history'}
-      subtitle={workOrderHistoryCount(repairs, done.length - repairs)}
+      subtitle={subtitle}
       width={820}
       footer={<Btn variant="ghost" onClick={onClose}>{'Close'}</Btn>}
     >
-      {done.length === 0 ? (
+      {status === 'loading' ? (
+        <p role="status" aria-live="polite" style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '18px 0', textAlign: 'center' }}>
+          {'Loading history…'}
+        </p>
+      ) : status === 'error' ? (
+        <div role="alert" style={{ textAlign: 'center', margin: '8px 0' }}>
+          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 14px' }}>
+            {'History could not be loaded. Your current work board is still available.'}
+          </p>
+          <Btn variant="primary" onClick={onRetry}>{'Retry history'}</Btn>
+        </div>
+      ) : done.length === 0 ? (
         <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink3, margin: '8px 0', textAlign: 'center' }}>
           {'Nothing closed yet.'}
         </p>
@@ -678,6 +707,9 @@ export function WorkOrdersTab() {
 
   const [orders, setOrders] = useState<WorkOrder[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [history, setHistory] = useState<WorkOrder[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<HistoryLoadState>('idle');
   const [submitOpen, setSubmitOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -696,17 +728,62 @@ export function WorkOrdersTab() {
   const gate = useBoardGate(activePropertyId, 'work_orders', loaded);
 
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId) {
+      setLoaded(false);
+      setLoadError(false);
+      setOrders([]);
+      setHistory([]);
+      setHistoryStatus('idle');
+      setHistoryOpen(false);
+      setDetailId(null);
+      return;
+    }
     setLoaded(false);
-    const unsub = subscribeToWorkOrders(user.uid, activePropertyId, (rows) => {
-      setLoaded(true);
-      setOrders(rows);
-    });
+    setLoadError(false);
+    setOrders([]);
+    setHistory([]);
+    setHistoryStatus('idle');
+    setHistoryOpen(false);
+    setDetailId(null);
+    let initialSettled = false;
+    const unsub = subscribeToWorkOrders(
+      user.uid,
+      activePropertyId,
+      (rows) => {
+        initialSettled = true;
+        setLoaded(true);
+        setLoadError(false);
+        setOrders(rows);
+      },
+      () => {
+        if (!initialSettled) setLoadError(true);
+        // Keep `loaded` false so the existing timeout gate remains a safe
+        // fallback if the callback races with an error notification.
+      },
+    );
     return () => unsub();
   }, [user, activePropertyId, gate.retryKey]);
 
+  useEffect(() => {
+    if (!historyOpen || !user || !activePropertyId) return;
+    let cancelled = false;
+    const propertyId = activePropertyId;
+    setHistoryStatus('loading');
+    void listWorkOrderHistory(user.uid, propertyId)
+      .then((rows) => {
+        if (cancelled || activePropertyId !== propertyId) return;
+        setHistory(rows);
+        setHistoryStatus('ready');
+      })
+      .catch((error) => {
+        console.error('[maintenance] work-order history load failed', error);
+        if (!cancelled && activePropertyId === propertyId) setHistoryStatus('error');
+      });
+    return () => { cancelled = true; };
+  }, [historyOpen, user, activePropertyId]);
+
   const open = useMemo(() => orders.filter((o) => o.status === 'open'), [orders]);
-  const doneList = useMemo(() => orders.filter((o) => o.status === 'done'), [orders]);
+  const historyCount = historyStatus === 'ready' ? history.length : null;
   const detail = detailId ? orders.find((o) => o.id === detailId) ?? null : null;
 
   // Animation B — "lift · slide · drop": FLIP the moved card from its recorded
@@ -887,6 +964,19 @@ export function WorkOrdersTab() {
     { key: 'professional', label: 'Professional' },
   ];
 
+  const retryBoard = () => {
+    setLoadError(false);
+    gate.retry();
+  };
+  const retryHistory = () => {
+    setHistoryStatus('idle');
+    setHistoryOpen(false);
+    window.setTimeout(() => {
+      setHistoryStatus('loading');
+      setHistoryOpen(true);
+    }, 0);
+  };
+
   return (
     <div className="mt-workorders-page" style={{ background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <style>{`
@@ -909,15 +999,15 @@ export function WorkOrdersTab() {
       <PageHead
         eyebrow={'Work orders · today'}
         lead={`${open.length} ${'open'}`}
-        rest={`${doneList.length} ${'done'}`}
+        rest={historyCount == null ? 'History not loaded' : `${historyCount} ${'done'}`}
         actions={<>
-          <Btn size="lg" variant="ghost" onClick={() => setHistoryOpen(true)}>{'History'} ({doneList.length}) →</Btn>
+          <Btn size="lg" variant="ghost" onClick={() => { setHistoryStatus('loading'); setHistoryOpen(true); }}>{'History'}{historyCount == null ? '' : ` (${historyCount})`} →</Btn>
           <Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {'New work order'}</Btn>
         </>}
       />
 
-      {gate.status === 'error' ? (
-        <BoardLoadError es={es} onRetry={gate.retry} />
+      {loadError || gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={retryBoard} />
       ) : gate.status === 'loading' ? (
         <BoardLoading es={es} />
       ) : open.length === 0 ? (
@@ -950,7 +1040,14 @@ export function WorkOrdersTab() {
         onSaveContractor={saveContractor}
         onSaveCostAsset={saveCostAsset}
       />
-      <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} done={doneList} es={es} />
+      <HistoryModal
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        done={history}
+        status={historyStatus}
+        onRetry={retryHistory}
+        es={es}
+      />
 
       <ToastHost
         toasts={toasts}
