@@ -160,7 +160,10 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /<HotelTeamPanel/);
     // The second stacked list is gone: one person is one card now.
     assert.doesNotMatch(company, /OperationalStaffSection/);
-    assert.match(company, /<PeoplePanel\s+key=\{activeProperty\?\.id \?\? ['"]no-hotel['"]\}/);
+    assert.match(
+      company,
+      /<PeoplePanel\s+key=\{`\$\{activeProperty\?\.id \?\? ['"]no-hotel['"]\}:\$\{selectedPortfolioCompany\?\.organizationId \?\? \(resolved\.organizations\.length === 1 \? resolved\.organizations\[0\]\?\.id : ['"]no-organization['"]\)\}`\}/,
+    );
     assert.match(hotelTeam, /buildHotelRoster\(teamForHotel, rosterStaff\)/);
     assert.match(hotelTeam, /const rosterStaff = React\.useMemo/);
     assert.match(company, /staffProfiles=\{staff\}/);

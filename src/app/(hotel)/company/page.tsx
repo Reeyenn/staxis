@@ -952,11 +952,11 @@ function CompanyAccessContent() {
                   onStructureChanged={completeAccessMutation}
                 />
               ) : tab === 'people' ? (
+                // The company-level invite surface has its own organization
+                // cache. Include that identity in the People remount key so
+                // a fast portfolio/company switch cannot briefly keep the
+                // previous organization's options or pending rows mounted.
                 <PeoplePanel
-                  // The company-level invite surface has its own organization
-                  // cache. Include that identity in the People remount key so
-                  // a fast portfolio/company switch cannot briefly keep the
-                  // previous organization's options or pending rows mounted.
                   key={`${activeProperty?.id ?? 'no-hotel'}:${selectedPortfolioCompany?.organizationId ?? (resolved.organizations.length === 1 ? resolved.organizations[0]?.id : 'no-organization')}`}
                   companyInviteOrganizationId={
                     selectedPortfolioCompany?.organizationId
