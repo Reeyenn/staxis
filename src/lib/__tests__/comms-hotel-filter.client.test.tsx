@@ -141,6 +141,13 @@ describe('Messages hotel scope/filter composition', () => {
       successfulPropertyIds: [],
       failures: [{ propertyId: HOTEL_B, unauthorized: true }],
     }), [HOTEL_A]);
+    assert.deepEqual(hotelRefreshPropertyIds({
+      filter: ALL_HOTELS_FILTER,
+      activePropertyId: null,
+      candidatePropertyIds: [HOTEL_A, HOTEL_B],
+      successfulPropertyIds: [],
+      failures: [{ propertyId: HOTEL_A, unauthorized: true }, { propertyId: HOTEL_B, unauthorized: true }],
+    }), []);
   });
 
   test('new hotel selector is labeled and has a mobile-sized target', () => {
@@ -154,6 +161,11 @@ describe('Messages hotel scope/filter composition', () => {
     assert.match(source, /onPick=\{\(staffId\) => void openDm\(staffId, newMessagePropertyId\)\}/);
     assert.match(source, /const showHotelContext = shouldShowHotelContext\(\{/);
     assert.match(source, /showPropertyLabel=\{showHotelContext\}/);
+    assert.match(source, /const canRetry = refreshIds\.length > 0/);
+    assert.match(source, /canRetry=\{canRetry\}/);
+    assert.match(source, /!loading && canRetry &&/);
+    assert.match(source, /if \(!preserve\) setError\(null\)/);
+    assert.match(source, /Messages is not available for the hotels in this scope\./);
   });
 
   test('new message overlay keeps mobile-safe input and Escape close behavior', () => {

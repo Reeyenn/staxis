@@ -170,7 +170,7 @@ function useHotelBootstraps(hotels: HotelScopeOption[], filter: string, activePi
     }
     if (requested.length === 0) {
       setLoading(false);
-      setError(null);
+      if (!preserve) setError(null);
       return;
     }
     setLoading(true);
@@ -235,8 +235,9 @@ function useHotelBootstraps(hotels: HotelScopeOption[], filter: string, activePi
   }, [load, refreshIds, refreshIdsKey]);
 
   const reload = React.useCallback(() => load(refreshIds, true), [load, refreshIds]);
+  const canRetry = refreshIds.length > 0;
 
-  return { records, failures, loading, error, reload };
+  return { records, failures, loading, error, reload, canRetry };
 }
 
 function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelScopeOption[] }) {
@@ -320,7 +321,7 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
   // ── Data ──────────────────────────────────────────────────────────────────
   // Each bootstrap is independently hotel-authorized. The successful set is
   // the only source for All hotels/filter choices; denied hotels never appear.
-  const { records: hotelBootstraps, failures: hotelBootstrapFailures, loading: bootLoading, error: bootError, reload: loadBoot } = useHotelBootstraps(hotels, hotelFilter, pid);
+  const { records: hotelBootstraps, failures: hotelBootstrapFailures, loading: bootLoading, error: bootError, reload: loadBoot, canRetry } = useHotelBootstraps(hotels, hotelFilter, pid);
   const hotelConversations = React.useMemo<HotelConversation[]>(
     () => sortHotelConversations(hotelBootstraps.flatMap(conversationsWithHotelContext)),
     [hotelBootstraps],
@@ -646,13 +647,18 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
     return <div style={{ padding: 40, fontFamily: SANS, color: T.dim }}>{'Select a property to use Communications.'}</div>;
   }
   if (!boot) {
+    const noEligibleHotels = !bootLoading
+      && !canRetry
+      && hotelBootstrapFailures.length > 0
+      && hotelBootstrapFailures.every((failure) => failure.unauthorized);
     return (
       <div className="comms-shell" style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative', borderRadius: 18, border: '1px solid rgba(31,35,28,.08)', boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)', overflow: 'hidden' }}>
         <ResourceState
-          loading={bootLoading || !bootError}
-          title={bootLoading || !bootError ? 'Loading Communications…' : 'Communications could not load'}
-          detail={bootLoading || !bootError ? 'Getting conversations and staff for this property.' : 'Check your connection, then try again. Your data has not been changed.'}
+          loading={bootLoading || (!bootError && !noEligibleHotels)}
+          title={noEligibleHotels ? 'Messages is not available' : bootLoading || !bootError ? 'Loading Communications…' : 'Communications could not load'}
+          detail={noEligibleHotels ? 'Messages is not available for the hotels in this scope.' : bootLoading || !bootError ? 'Getting conversations and staff for this property.' : 'Check your connection, then try again. Your data has not been changed.'}
           retryLabel={'Try again'}
+          canRetry={canRetry}
           onRetry={() => void loadBoot()}
         />
       </div>
@@ -863,7 +869,7 @@ function CommsPropertyApp({ pid, hotels }: { pid: string | null; hotels: HotelSc
   );
 }
 
-function ResourceState({ loading, title, detail, retryLabel, onRetry }: { loading: boolean; title: string; detail: string; retryLabel: string; onRetry: () => void }) {
+function ResourceState({ loading, title, detail, retryLabel, canRetry = true, onRetry }: { loading: boolean; title: string; detail: string; retryLabel: string; canRetry?: boolean; onRetry: () => void }) {
   return (
     <div role={loading ? 'status' : 'alert'} aria-live={loading ? 'polite' : 'assertive'} style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 28, textAlign: 'center' }}>
       <style>{`@keyframes comms-resource-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.comms-resource-spin{animation:none!important}}`}</style>
@@ -871,7 +877,7 @@ function ResourceState({ loading, title, detail, retryLabel, onRetry }: { loadin
         {loading ? <Loader2 size={24} className="comms-resource-spin" style={{ animation: 'comms-resource-spin 1s linear infinite' }} color={T.forest} aria-hidden="true" /> : <AlertCircle size={24} color={T.terracotta} aria-hidden="true" />}
         <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{title}</div>
         <div style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.5, color: T.dim }}>{detail}</div>
-        {!loading && <button onClick={onRetry} style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '0 16px', borderRadius: 9, border: `1px solid ${T.hairer}`, background: T.bg, color: T.ink, fontFamily: SANS, fontWeight: 650, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" />{retryLabel}</button>}
+        {!loading && canRetry && <button onClick={onRetry} style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '0 16px', borderRadius: 9, border: `1px solid ${T.hairer}`, background: T.bg, color: T.ink, fontFamily: SANS, fontWeight: 650, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" />{retryLabel}</button>}
       </div>
     </div>
   );
