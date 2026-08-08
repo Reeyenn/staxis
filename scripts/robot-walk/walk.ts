@@ -42,7 +42,11 @@ import {
   runRobotWalk,
   summarizeRobotWalk,
   robotWalkStepLabel,
+  ROBOT_WALK_ASSIGNED_TODO_TITLE,
+  ROBOT_WALK_FACT_TEXT,
+  ROBOT_WALK_ITEM_NAME,
   ROBOT_WALK_MARKER,
+  ROBOT_WALK_TODO_TITLE,
   type RobotWalkStep,
   type RobotWalkStepResult,
 } from '../../src/lib/automation/robot-walk';
@@ -70,10 +74,10 @@ const COLLEAGUE = process.env.ROBOT_WALK_COLLEAGUE || 'Robot Colleague';
 const ASSIGNEE = process.env.ROBOT_WALK_ASSIGNEE || 'Robot Manager';
 
 /** Every artifact the robot makes, so cleanup can find them by name. */
-const TODO_TITLE = `${ROBOT_WALK_MARKER} nightly walkthrough`;
-const ASSIGNED_TODO_TITLE = `${ROBOT_WALK_MARKER} hand this to somebody`;
-const FACT_TEXT = `${ROBOT_WALK_MARKER} the supply closet is on floor 2.`;
-const ITEM_NAME = `${ROBOT_WALK_MARKER} spare bulbs`;
+const TODO_TITLE = ROBOT_WALK_TODO_TITLE;
+const ASSIGNED_TODO_TITLE = ROBOT_WALK_ASSIGNED_TODO_TITLE;
+const FACT_TEXT = ROBOT_WALK_FACT_TEXT;
+const ITEM_NAME = ROBOT_WALK_ITEM_NAME;
 
 /** Per-action patience. The live site is a real deploy on a cold serverless. */
 const ACTION_MS = 20_000;
@@ -99,10 +103,162 @@ function composerInput(page: Page): Locator {
   return page.getByTestId('composer').getByRole('textbox', { name: 'What needs doing' });
 }
 
-/** Every work row currently on the list whose title the robot wrote. */
-async function robotRowTitles(page: Page): Promise<string[]> {
-  const titles = await page.locator('.fx-row .fx-rowt').allTextContents();
-  return titles.filter(isRobotWalkArtifact);
+interface BrowserRequest {
+  method(): string;
+  postDataJSON?: () => unknown;
+  postData?: () => string | null;
+}
+
+interface BrowserResponse {
+  ok(): boolean;
+  status(): number;
+  url(): string;
+  request(): BrowserRequest;
+  json(): Promise<unknown>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function responsePath(response: BrowserResponse): string {
+  try { return new URL(response.url()).pathname; } catch { return response.url(); }
+}
+
+/** Read a request's JSON body without making a malformed response predicate throw. */
+function requestBody(response: BrowserResponse): Record<string, unknown> | null {
+  const request = response.request();
+  try {
+    const json = request.postDataJSON?.();
+    if (isRecord(json)) return json;
+  } catch { /* fall through to the raw body */ }
+  try {
+    const raw = request.postData?.();
+    if (!raw) return null;
+    const json: unknown = JSON.parse(raw);
+    return isRecord(json) ? json : null;
+  } catch {
+    return null;
+  }
+}
+
+function isMatchingPost(
+  response: BrowserResponse,
+  path: string,
+  matches: (body: Record<string, unknown>) => boolean,
+): boolean {
+  if (responsePath(response) !== path || response.request().method() !== 'POST') return false;
+  const body = requestBody(response);
+  return body !== null && matches(body);
+}
+
+async function readSuccessfulEnvelope(
+  response: BrowserResponse,
+  operation: string,
+): Promise<Record<string, unknown>> {
+  const status = response.status();
+  const body = await response.json().catch(() => null) as unknown;
+  if (status < 200 || status >= 300 || !isRecord(body) || body.ok !== true) {
+    const detail = isRecord(body) && typeof body.error === 'string' ? `: ${body.error}` : '';
+    throw new Error(`${operation} failed (HTTP ${status})${detail}`);
+  }
+  return body;
+}
+
+/** Task ids come from the API's UUID primary key and are safe for an exact CSS attribute lookup. */
+const TASK_ID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function taskRow(page: Page, taskId: string): Locator {
+  if (!TASK_ID_RX.test(taskId)) throw new Error(`The task create response returned an invalid id "${taskId}".`);
+  return page.locator(`.fx-row[data-row-id="task:${taskId}"]`);
+}
+
+async function waitForTaskRow(page: Page, taskId: string, expectedTitle: string): Promise<void> {
+  const row = taskRow(page, taskId);
+  await row.waitFor({ state: 'visible', timeout: ACTION_MS });
+  const title = await row.locator('.fx-rowt').first().textContent();
+  if (title?.trim() !== expectedTitle) {
+    throw new Error(`Task ${taskId} appeared with title "${title?.trim() ?? 'nothing'}", not "${expectedTitle}".`);
+  }
+}
+
+/** Submit one sentence and require the one-shot task id, never a template id. */
+async function createTaskFromComposer(page: Page, title: string): Promise<string> {
+  await composerInput(page).fill(title);
+  const responsePromise = page.waitForResponse(
+    (response) => isMatchingPost(response, '/api/comms/tasks', (body) => body.title === title),
+    { timeout: ACTION_MS },
+  );
+  const [response] = await Promise.all([responsePromise, page.keyboard.press('Enter')]);
+  const envelope = await readSuccessfulEnvelope(response, `creating "${title}"`);
+  const data = envelope.data;
+  if (
+    !isRecord(data)
+    || typeof data.id !== 'string'
+    || data.id.trim().length === 0
+    || data.templateId !== undefined
+  ) {
+    const template = isRecord(data) && typeof data.templateId === 'string'
+      ? ` (the API returned templateId ${data.templateId}; a one-off task was expected)`
+      : '';
+    throw new Error(`Creating "${title}" did not return a task id${template}.`);
+  }
+  return data.id.trim();
+}
+
+/** Click Done on one exact row, validate its write, then wait for that same row to leave the UI. */
+async function completeTaskRow(page: Page, taskId: string): Promise<void> {
+  const row = taskRow(page, taskId);
+  await row.waitFor({ state: 'visible', timeout: ACTION_MS });
+  const done = row.getByRole('button', { name: 'Done', exact: true });
+  const responsePromise = page.waitForResponse(
+    (response) => isMatchingPost(response, '/api/worklist/complete', (body) => (
+      body.sourceId === taskId && body.outcome === 'done'
+    )),
+    { timeout: ACTION_MS },
+  );
+  const [response] = await Promise.all([responsePromise, done.click({ timeout: ACTION_MS })]);
+  const envelope = await readSuccessfulEnvelope(response, `completing task ${taskId}`);
+  const data = envelope.data;
+  if (!isRecord(data) || data.recorded !== true) {
+    throw new Error(`Completing task ${taskId} returned no recorded=true confirmation.`);
+  }
+  await row.waitFor({ state: 'detached', timeout: ACTION_MS });
+}
+
+interface RobotTaskRow {
+  id: string;
+  title: string;
+}
+
+/** Every robot-authored work row, retaining its id so duplicate titles cannot move the target. */
+async function robotTaskRows(page: Page): Promise<RobotTaskRow[]> {
+  const rows = page.locator('.fx-row');
+  const found: RobotTaskRow[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < await rows.count(); index += 1) {
+    const row = rows.nth(index);
+    const title = (await row.locator('.fx-rowt').first().textContent())?.trim() ?? '';
+    if (!isRobotWalkArtifact(title)) continue;
+    const rowId = await row.getAttribute('data-row-id');
+    // Robot to-dos are the task source. If a marker ever appears on another
+    // source kind, leave it alone rather than guessing how to settle it.
+    const id = rowId?.startsWith('task:') ? rowId.slice('task:'.length) : null;
+    if (!id || !TASK_ID_RX.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    found.push({ id, title });
+  }
+  return found;
+}
+
+/** Wait briefly before declaring a clean list; rows can paint after feed-ready. */
+async function waitForRobotTaskRows(page: Page, settleMs: number): Promise<RobotTaskRow[]> {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const rows = await robotTaskRows(page);
+    if (rows.length > 0 || Date.now() >= deadline) return rows;
+    await page.waitForTimeout(500);
+  }
 }
 
 async function openFeed(page: Page): Promise<void> {
@@ -170,17 +326,28 @@ async function cleanUp(page: Page, label: string): Promise<void> {
   // 1. To-dos — finished, which is the product's own way of clearing one.
   try {
     await openFeed(page);
+    let rows = await waitForRobotTaskRows(page, 8_000);
     for (let guard = 0; guard < 10; guard += 1) {
-      const titles = await robotRowTitles(page);
-      if (titles.length === 0) break;
-      const row = page.locator('.fx-row').filter({ hasText: titles[0] }).first();
-      const done = row.getByRole('button', { name: 'Done', exact: true });
-      if (await done.count() === 0) break;
-      await done.click({ timeout: ACTION_MS });
-      await page.waitForTimeout(1_200);
+      if (rows.length === 0) break;
+      // Complete by source id, not by title. Duplicate marker rows are expected
+      // after an interrupted walk, and a fresh `.first()` locator can jump to a
+      // different row while React reloads the list.
+      await completeTaskRow(page, rows[0].id);
+      rows = await waitForRobotTaskRows(page, 2_000);
     }
   } catch (err) {
     say(`  could not clear the robot's to-dos: ${String(err)}`);
+  }
+  try {
+    const left = await waitForRobotTaskRows(page, 2_000);
+    if (left.length > 0) {
+      console.log(
+        `::warning::The robot left ${left.length} of its own to-dos behind: `
+        + left.map((row) => `${row.title} (task:${row.id})`).join('; '),
+      );
+    }
+  } catch (err) {
+    say(`  could not check for leftover robot to-dos: ${String(err)}`);
   }
 
   // 2. Facts.
@@ -220,6 +387,8 @@ async function cleanUp(page: Page, label: string): Promise<void> {
 // ─── The walk ────────────────────────────────────────────────────────────────
 
 function buildSteps(page: Page): RobotWalkStep[] {
+  let todoTaskId: string | null = null;
+
   return [
     {
       id: 'sign-in',
@@ -249,10 +418,8 @@ function buildSteps(page: Page): RobotWalkStep[] {
     {
       id: 'add-todo',
       run: async () => {
-        await composerInput(page).fill(TODO_TITLE);
-        await page.keyboard.press('Enter');
-        await page.locator('.fx-row').filter({ hasText: TODO_TITLE }).first()
-          .waitFor({ timeout: ACTION_MS });
+        todoTaskId = await createTaskFromComposer(page, TODO_TITLE);
+        await waitForTaskRow(page, todoTaskId, TODO_TITLE);
       },
     },
     {
@@ -281,18 +448,15 @@ function buildSteps(page: Page): RobotWalkStep[] {
           throw new Error(`Picked ${ASSIGNEE} but the composer still says "${label ?? 'nothing'}".`);
         }
 
-        await composerInput(page).press('Enter');
-        await page.locator('.fx-row').filter({ hasText: ASSIGNED_TODO_TITLE }).first()
-          .waitFor({ timeout: ACTION_MS });
+        const assignedTaskId = await createTaskFromComposer(page, ASSIGNED_TODO_TITLE);
+        await waitForTaskRow(page, assignedTaskId, ASSIGNED_TODO_TITLE);
       },
     },
     {
       id: 'complete-todo',
       run: async () => {
-        const row = page.locator('.fx-row').filter({ hasText: TODO_TITLE }).first();
-        await row.getByRole('button', { name: 'Done', exact: true }).click({ timeout: ACTION_MS });
-        await page.locator('.fx-row').filter({ hasText: TODO_TITLE })
-          .first().waitFor({ state: 'detached', timeout: ACTION_MS });
+        if (!todoTaskId) throw new Error('The to-do id was not captured when it was created.');
+        await completeTaskRow(page, todoTaskId);
       },
     },
     {
