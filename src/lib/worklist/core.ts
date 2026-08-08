@@ -894,7 +894,13 @@ export async function listAssignees(
  * appears here ONCE SOMEBODY ELSE HAS SETTLED IT: not as work outstanding, as
  * news that it is over.
  */
-export async function gatherAssignedByMe(
+export interface GatherAssignedByMeResult {
+  items: AssignedByMeItem[];
+  /** True when the raw authored-task window returned its extra sentinel row. */
+  sourceTruncated: boolean;
+}
+
+async function gatherAssignedByMeInternal(
   pid: string,
   staffId: string,
   now: Date = new Date(),
@@ -903,7 +909,8 @@ export async function gatherAssignedByMe(
    *  here: "waiting 2 days" is counted on the hotel's calendar, not the
    *  server's, and no caller should have to remember that to get it right. */
   timezone?: string | null,
-): Promise<AssignedByMeItem[]> {
+  fetchExtraSentinel = false,
+): Promise<GatherAssignedByMeResult> {
   const tz = timezone === undefined ? await propertyTimezoneOf(pid) : timezone;
   const { data, error } = await supabaseAdmin
     .from('comms_tasks')
@@ -914,10 +921,10 @@ export async function gatherAssignedByMe(
     // decided by keepForAssigner below rather than in the filter: the rule now
     // spans three columns and two states, and "unassigned OR not mine" cannot
     // be said in a filter chain without an interpolated PostgREST expression.
-    // The limit is doubled to cover the self-assigned rows the query used to
-    // drop and now carries.
+    // Aggregate readers ask for one extra sentinel row so they can report a
+    // bounded source window; the legacy array-only wrapper keeps this limit.
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(fetchExtraSentinel ? limit + 1 : limit);
   if (error) {
     log.error('[worklist] assigned-by-me query failed', { pid, err: error.message });
     throw new Error(error.message);
@@ -931,9 +938,37 @@ export async function gatherAssignedByMe(
     r.skipped_by_staff_id as string | null,
   ]).filter((x): x is string => !!x));
 
-  return rows
+  const items = rows
     .map((r) => mapAssignedRow(r, nameMap, now, tz))
     .filter((item) => keepForAssigner(item, staffId));
+  const sourceTruncated = fetchExtraSentinel && rows.length > limit;
+  return {
+    items: sourceTruncated ? items.slice(0, limit) : items,
+    sourceTruncated,
+  };
+}
+
+/** Existing callers keep the historical array-only contract. */
+export async function gatherAssignedByMe(
+  pid: string,
+  staffId: string,
+  now: Date = new Date(),
+  limit = 200,
+  timezone?: string | null,
+): Promise<AssignedByMeItem[]> {
+  const result = await gatherAssignedByMeInternal(pid, staffId, now, limit, timezone);
+  return result.items;
+}
+
+/** Aggregate readers need to know when the raw authored-task window was capped. */
+export async function gatherAssignedByMeWithMeta(
+  pid: string,
+  staffId: string,
+  now: Date = new Date(),
+  limit = 200,
+  timezone?: string | null,
+): Promise<GatherAssignedByMeResult> {
+  return gatherAssignedByMeInternal(pid, staffId, now, limit, timezone, true);
 }
 
 /**

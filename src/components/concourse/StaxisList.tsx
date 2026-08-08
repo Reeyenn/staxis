@@ -39,6 +39,7 @@ import { reportCompanionDeed, reportCompanionFlow } from '@/components/companion
 import { readEnvelope } from '@/lib/api-envelope';
 import type { LogEntryDTO } from '@/lib/comms/types';
 import type { AssignedByMeItem, WorklistItem } from '@/lib/worklist/types';
+import type { MultiHotelLabel } from '@/lib/staxis/multi-hotel-types';
 import type { FeedPrefs } from '@/lib/feed/prefs';
 import {
   COMPOSER_COPY,
@@ -58,6 +59,7 @@ import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 
 import { FindingCards, type QueueReadState } from './FindingCards';
 import { KnowsPanel } from './KnowsView';
+import { MultiHotelOpsPanel } from './MultiHotelOpsPanel';
 
 // Loaded on first open, not on every /feed load. The popup's pane pulls in the
 // Communications design layer AND three next/font families (13 faces), and Next
@@ -117,10 +119,15 @@ export interface StaxisListProps {
    * on the spine: it is where the day started.
    */
   brief?: React.ReactNode;
+  /** All current hotels for a non-company multi-hotel operator. */
+  multiHotelHotels?: MultiHotelLabel[];
+  /** Fresh account + authority key; changes must clear aggregate rows. */
+  multiHotelScopeKey?: string | null;
 }
 
 export function StaxisList({
   propertyId, lang, focusId, onReadState, canSeeFindings, hotelName = null, brief,
+  multiHotelHotels = [], multiHotelScopeKey = null,
 }: StaxisListProps) {
   const { user } = useAuth();
 
@@ -1287,6 +1294,12 @@ export function StaxisList({
           <LogbookRailPanel entries={railLog} onOpen={openLogbook} />
         </div>
       </div>
+
+      {multiHotelHotels.length > 1 && multiHotelScopeKey && (
+        <MultiHotelOpsPanel
+          scopeKey={multiHotelScopeKey}
+        />
+      )}
 
       <AssignedPopupView
         open={drawerOpen}

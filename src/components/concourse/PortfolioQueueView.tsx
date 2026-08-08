@@ -42,6 +42,7 @@ import type { PortfolioRun } from '@/lib/company/vp-queue-server';
 import { CxStyle } from './concourse-css';
 import { FindingCardsView } from './FindingCards';
 import { MorningBriefView } from './MorningBriefCard';
+import { MultiHotelOpsPanel } from './MultiHotelOpsPanel';
 import { DAILY_CARD_CAP, type ClosureVerdict, type Lang, type QueueFinding } from './finding-cards';
 import {
   portfolioRequestState,
@@ -213,6 +214,7 @@ export function PortfolioQueueBody({
   focusId = null,
   onVerdict,
   onAction,
+  footer,
 }: {
   scope: PortfolioScope;
   cards: PortfolioCard[];
@@ -229,6 +231,7 @@ export function PortfolioQueueBody({
   focusId?: string | null;
   onVerdict: (findingId: string, verdict: ClosureVerdict) => void;
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
+  footer?: React.ReactNode;
 }) {
   const es = false;
   const partialCoverage = !coverage.complete
@@ -324,6 +327,8 @@ export function PortfolioQueueBody({
         onVerdict={onVerdict}
         onAction={onAction}
       />
+
+      {footer}
 
       {/* Two DIFFERENT empty states, because they are two different facts.
           "We looked across your hotels and nothing reached you" is good news.
@@ -575,6 +580,12 @@ export function PortfolioQueueView({
       busyId={busyId}
       onVerdict={onVerdict}
       onAction={onAction}
+      footer={(
+        <MultiHotelOpsPanel
+          organizationId={portfolio.scope.organizationId}
+          scopeKey={`${authorizationKey}|operations:${portfolio.scope.organizationId}`}
+        />
+      )}
     />
   );
 }
