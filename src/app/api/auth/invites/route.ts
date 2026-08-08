@@ -386,13 +386,11 @@ async function companyInviteListing(
     log.warn('[invites:GET] company options unavailable', {
       requestId, msg: errToString(optionsErr),
     });
-    options = {
-      choosesHotels: false,
-      organizationId,
-      jobs: [],
-      hotels: [],
-      allowsAllIncludingFuture: false,
-    };
+    // A failed options projection is not an authorized empty result. Returning
+    // empty jobs here would make the People panel treat an upstream outage as
+    // a truthful, action-free company while the pending list remains stale.
+    // Fail closed so the client can show its retryable load state instead.
+    return capabilityUnavailableResponse(requestId);
   }
 
   let propertyNames: Map<string, string>;

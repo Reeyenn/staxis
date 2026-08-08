@@ -46,6 +46,8 @@ const NO_OPTIONS: CompanyInviteOptions = {
   allowsAllIncludingFuture: false,
 };
 
+const REVOKE_FOCUS_HEADING = '__company-people-heading__';
+
 function describeReach(invite: PendingCompanyInvite): string {
   if (invite.coversAllIncludingFuture) return 'Every hotel, including ones added later';
   if (invite.propertyNames.length === 0) return 'No hotels';
@@ -116,12 +118,16 @@ export default function CompanyInvitePanel({
   const [error, setError] = React.useState('');
   const [revokeError, setRevokeError] = React.useState('');
   const [sentTo, setSentTo] = React.useState('');
+  const [keepSurfaceAfterRevoke, setKeepSurfaceAfterRevoke] = React.useState(false);
 
   const loadAbortRef = React.useRef<AbortController | null>(null);
   const loadSequenceRef = React.useRef(0);
   const organizationGenerationRef = React.useRef(0);
   const activeOrganizationRef = React.useRef(organizationId);
   const confirmButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const peopleHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const revokeActionRefs = React.useRef(new Map<string, HTMLButtonElement>());
+  const focusAfterRevokeRef = React.useRef<string | null>(null);
 
   const clearOrganizationState = React.useCallback(() => {
     loadAbortRef.current?.abort();
@@ -143,6 +149,8 @@ export default function CompanyInvitePanel({
     setError('');
     setRevokeError('');
     setSentTo('');
+    setKeepSurfaceAfterRevoke(false);
+    focusAfterRevokeRef.current = null;
   }, []);
 
   const load = React.useCallback(async () => {
@@ -241,7 +249,29 @@ export default function CompanyInvitePanel({
   const allowedHotels = selectedJob
     ? options.hotels.filter((hotel) => selectedJob.allowedPropertyIds.includes(hotel.id))
     : [];
-  const visibleInvites = loadedForCurrentOrganization ? invites : [];
+  const visibleInvites = React.useMemo(
+    () => (loadedForCurrentOrganization ? invites : []),
+    [invites, loadedForCurrentOrganization],
+  );
+
+  React.useEffect(() => {
+    const targetId = focusAfterRevokeRef.current;
+    if (!targetId) return;
+    if (loadState === 'loading') {
+      // The successful DELETE removes the focused confirmation before the
+      // follow-up GET settles. Keep keyboard focus in the persistent surface
+      // during that gap, then move to the next revoke action once it exists.
+      peopleHeadingRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const actionTarget = targetId === REVOKE_FOCUS_HEADING
+      ? null
+      : revokeActionRefs.current.get(targetId) ?? null;
+    const destination = actionTarget ?? peopleHeadingRef.current;
+    if (!destination) return;
+    destination.focus({ preventScroll: true });
+    focusAfterRevokeRef.current = null;
+  }, [loadState, loadError, loadedOrganizationId, organizationId, visibleInvites]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -343,6 +373,13 @@ export default function CompanyInvitePanel({
         setRevokingInviteId(null);
         return;
       }
+      const revokedIndex = visibleInvites.findIndex((item) => item.id === invite.id);
+      const nextRevokeTarget = [
+        ...visibleInvites.slice(revokedIndex + 1),
+        ...visibleInvites.slice(0, Math.max(revokedIndex, 0)),
+      ].find((item) => item.id !== invite.id && item.canRevoke);
+      focusAfterRevokeRef.current = nextRevokeTarget?.id ?? REVOKE_FOCUS_HEADING;
+      setKeepSurfaceAfterRevoke(true);
       setInvites((current) => current.filter((item) => item.id !== invite.id));
       setConfirmingInviteId(null);
       setRevokeError('');
@@ -361,14 +398,17 @@ export default function CompanyInvitePanel({
     }
   };
 
-  if (loadedForCurrentOrganization && companyJobs.length === 0 && visibleInvites.length === 0) {
+  if (loadedForCurrentOrganization
+      && companyJobs.length === 0
+      && visibleInvites.length === 0
+      && !keepSurfaceAfterRevoke) {
     return null;
   }
 
   return (
     <section className={styles.sectionBlock} aria-busy={loadState === 'loading'}>
       <div className={styles.headingWithAction}>
-        <h3>{'Company people'}</h3>
+        <h3 ref={peopleHeadingRef} tabIndex={-1}>{'Company people'}</h3>
         {loadedForCurrentOrganization && companyJobs.length > 0 ? (
           <button
             type="button"
@@ -519,6 +559,10 @@ export default function CompanyInvitePanel({
                   ) : invite.canRevoke ? (
                     <button
                       className={styles.reviewButton}
+                      ref={(button) => {
+                        if (button) revokeActionRefs.current.set(invite.id, button);
+                        else revokeActionRefs.current.delete(invite.id);
+                      }}
                       type="button"
                       onClick={() => {
                         setConfirmingInviteId(invite.id);

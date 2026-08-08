@@ -248,7 +248,7 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
     assert.deepEqual(postBodies[1]?.propertyIds, [HOTEL_D]);
   });
 
-  test('shows initial failures with Retry, and keeps cancellation authorized, confirmed, and honest', async (context) => {
+  test('shows provider failures with Retry, and keeps cancellation authorized, confirmed, and honest', async (context) => {
     const restoreBrowser = installBrowser();
     const { supabase } = await import('@/lib/supabase');
     supabase.auth.stopAutoRefresh();
@@ -271,7 +271,7 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
       }
       getCount += 1;
       return Promise.resolve(getCount === 1
-        ? response({ ok: false, error: 'Company invitations are unavailable right now.' }, 503)
+        ? response({ ok: false, error: 'Permissions are temporarily unavailable. Please retry.' }, 503)
         : response(listing(ORG_A, [pendingAuthorized, pendingUnauthorized])));
     });
 
@@ -286,7 +286,7 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
     });
     await act(async () => { root.render(<CompanyInvitePanel organizationId={ORG_A} styles={styles} />); });
     await flush();
-    assert.ok(container.querySelector('[role="alert"]'));
+    assert.match(container.querySelector('[role="alert"]')?.textContent ?? '', /temporarily unavailable|retry/i);
     assert.ok([...container.querySelectorAll('button')].some((button) => button.textContent === 'Retry'));
     assert.equal(container.querySelector('button.primary'), null, 'failed loading must not leave a stale invite action');
 
@@ -330,6 +330,7 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
     const originalFetch = globalThis.fetch;
     let getCount = 0;
     let deleteCount = 0;
+    let resolveRefresh: ((value: Response) => void) | null = null;
     context.mock.method(globalThis, 'fetch', (input: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method?.toUpperCase() ?? 'GET';
       if (method === 'DELETE') {
@@ -337,6 +338,11 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
         return Promise.resolve(response({ ok: true }));
       }
       getCount += 1;
+      if (getCount === 2) {
+        return new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
+        });
+      }
       return Promise.resolve(getCount === 1
         ? response(listing(ORG_A, [pendingAuthorized, pendingUnauthorized]))
         : response({ ok: false, error: 'Company invitations are unavailable right now.' }, 503));
@@ -361,6 +367,10 @@ describe('mounted company invitation panel', { concurrency: false }, () => {
     assert.ok(yes);
     await click(yes);
     assert.equal(deleteCount, 1);
+    assert.equal(document.activeElement, container.querySelector('h3'), 'successful revoke keeps focus in the persistent Company people surface while refresh is pending');
+    resolveRefresh?.(response({ ok: false, error: 'Company invitations are unavailable right now.' }, 503));
+    await flush();
+    assert.equal(document.activeElement, container.querySelector('h3'), 'revoke refresh failure restores focus to the persistent Company people heading');
     assert.ok(container.querySelector('[role="alert"]'));
     assert.ok([...container.querySelectorAll('button')].some((button) => button.textContent === 'Retry'));
     assert.doesNotMatch(container.textContent ?? '', /authorized@example\.com/);

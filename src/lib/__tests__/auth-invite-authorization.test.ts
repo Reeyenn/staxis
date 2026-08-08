@@ -101,6 +101,7 @@ interface TestState {
   beforeGuardedCreate: (() => void) | null;
   beforeGuardedRevoke: (() => void) | null;
   beforeInviteListPage: (() => void) | null;
+  optionsLookupError: boolean;
 }
 
 let state: TestState;
@@ -160,6 +161,7 @@ function resetState(): void {
     beforeGuardedCreate: null,
     beforeGuardedRevoke: null,
     beforeInviteListPage: null,
+    optionsLookupError: false,
   };
 }
 
@@ -783,6 +785,13 @@ function installSupabaseStub(): void {
           };
         },
         then: (resolve: (value: unknown) => unknown) => {
+          if (state.optionsLookupError) {
+            return resolve({
+              data: null,
+              error: { message: 'forced options lookup failure' },
+              count: 0,
+            });
+          }
           const rows = (hotelIds ?? []).flatMap((id) => {
             const name = hotelName(id);
             return name ? [{ id, name }] : [];
@@ -1077,6 +1086,18 @@ function revokeRequest(inviteId: string): NextRequest {
 function listRequest(hotelId = HOTEL_A): NextRequest {
   return new NextRequest(
     `https://staxis.test/api/auth/invites?hotelId=${hotelId}`,
+    {
+      headers: {
+        authorization: 'Bearer route-contract-token',
+        cookie: `staxis_device=${'a'.repeat(64)}`,
+      },
+    },
+  );
+}
+
+function companyListRequest(organizationId = ORGANIZATION_A): NextRequest {
+  return new NextRequest(
+    `https://staxis.test/api/auth/invites?organizationId=${organizationId}`,
     {
       headers: {
         authorization: 'Bearer route-contract-token',
@@ -1525,6 +1546,52 @@ describe('DELETE /api/auth/invites uses the guarded anti-enumerating boundary', 
 });
 
 describe('GET /api/auth/invites reasserts authority before egress', () => {
+  test('fails closed when company invite options cannot be projected, then retries successfully', async () => {
+    normalizeCompanyAuthority();
+    state.optionsLookupError = true;
+
+    const unavailable = await listInvites(companyListRequest());
+    assert.equal(unavailable.status, 503);
+    const unavailableBody = await unavailable.json() as { data?: unknown; error?: string };
+    assert.equal(unavailableBody.data, undefined);
+    assert.match(unavailableBody.error ?? '', /temporarily unavailable|retry/i);
+
+    // A real successful options projection remains a 200 response, including
+    // its explicit jobs/hotel choices, rather than being confused with the
+    // failed empty-options fallback above.
+    state.optionsLookupError = false;
+    const retried = await listInvites(companyListRequest());
+    assert.equal(retried.status, 200);
+    const retriedBody = await retried.json() as {
+      data?: {
+        invites?: unknown[];
+        options?: { organizationId?: string | null; jobs?: unknown[] };
+      };
+    };
+    assert.deepEqual(retriedBody.data?.invites, []);
+    assert.equal(retriedBody.data?.options?.organizationId, ORGANIZATION_A);
+    assert.ok((retriedBody.data?.options?.jobs?.length ?? 0) > 0);
+  });
+
+  test('keeps a genuinely empty authorized company options result truthful', async () => {
+    normalizeCompanyAuthority();
+    state.normalizedStandings = state.normalizedStandings.map((standing) => ({
+      ...standing,
+      operationalRole: 'front_desk',
+      accessProfile: 'property_manager',
+      scopeType: 'property',
+    }));
+
+    const response = await listInvites(companyListRequest());
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      data?: { invites?: unknown[]; options?: { jobs?: unknown[]; hotels?: unknown[] } };
+    };
+    assert.deepEqual(body.data?.invites, []);
+    assert.deepEqual(body.data?.options?.jobs, []);
+    assert.deepEqual(body.data?.options?.hotels, []);
+  });
+
   test('projects exact local roles and never defaults a General Manager to a peer-GM invite', async () => {
     const response = await listInvites(listRequest());
     assert.equal(response.status, 200);
