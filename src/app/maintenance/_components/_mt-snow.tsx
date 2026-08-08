@@ -112,6 +112,7 @@ export function Btn({
   }[variant];
   return (
     <button
+      className="stx-snow-button"
       onClick={onClick}
       disabled={disabled}
       type={type ?? 'button'}

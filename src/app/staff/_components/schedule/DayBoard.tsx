@@ -97,7 +97,8 @@ export function DayBoard({
   if (shifts.some(s => s.dept === 'other') || openShifts.some(o => o.dept === 'other')) lanes.push('other');
 
   return (
-    <div style={{ padding: '14px 22px 18px' }}>
+    <div className="staff-day-board-scroll">
+      <div className="staff-day-board" style={{ padding: '14px 22px 18px' }}>
       {/* hour axis */}
       <div style={{ position: 'relative', height: 14, marginLeft: GUT, marginBottom: 4 }}>
         {ticks.map(m => {
@@ -183,6 +184,7 @@ export function DayBoard({
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
@@ -210,7 +212,7 @@ function OpenShiftRow({
   ].filter(Boolean).join(' · ');
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', height: ROW_H }}>
+    <div className="staff-day-board-open-row" style={{ display: 'flex', alignItems: 'center', height: ROW_H }}>
       <div style={{ width: GUT, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, paddingRight: 10 }}>
         <span aria-hidden="true" style={{
           width: 20, height: 20, borderRadius: '50%', flexShrink: 0,
@@ -238,6 +240,7 @@ function OpenShiftRow({
           type="button"
           onClick={() => onTap(op.id)}
           title={title}
+          className="staff-day-board-open-block"
           style={{
             position: 'absolute', top: 4, height: 26, left: `${left}%`, width: `${width}%`,
             borderRadius: 8, background: 'rgba(201,150,68,0.08)',
@@ -404,9 +407,10 @@ function ShiftRow({
   };
 
   return (
-    <div
-      ref={rowRef}
-      style={{ display: 'flex', alignItems: 'center', height: ROW_H }}
+      <div
+        ref={rowRef}
+        className="staff-day-board-row"
+        style={{ display: 'flex', alignItems: 'center', height: ROW_H }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
@@ -449,6 +453,7 @@ function ShiftRow({
         {/* block */}
         <div
           ref={blockRef}
+          className="staff-day-board-shift-block"
           onPointerDown={readOnly ? undefined : e => startDrag(e, 'move')}
           title={`${nameOf(sh.staffId)}${readOnly ? ' · Archived history' : ''}${sh.note ? `: ${sh.note}` : ''}`}
           style={{
@@ -487,6 +492,7 @@ function ShiftRow({
           {/* resize handle */}
           {!readOnly ? (
             <span
+              className="staff-day-board-resize-handle"
               onPointerDown={e => startDrag(e, 'resize')}
               style={{
                 position: 'absolute', right: 0, top: 0, bottom: 0, width: 9, cursor: 'ew-resize',
@@ -500,6 +506,7 @@ function ShiftRow({
         {/* remove */}
         {hover && !leaving && !readOnly && (
           <button
+            className="staff-day-board-remove"
             onClick={animateOut}
             title="Remove"
             style={{

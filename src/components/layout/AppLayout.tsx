@@ -163,7 +163,7 @@ export function AppLayout({
         </div>
       )}
 
-      <main className="cx-swap" style={{
+      <main className="cx-swap" data-staxis-main={!hideGlobalAsk ? 'true' : undefined} style={{
         flex: 1,
         width: '100%',
         maxWidth: '1920px',

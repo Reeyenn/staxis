@@ -557,6 +557,77 @@ body {
   .btn { min-height: 40px; }
 }
 
+/* The global Ask Staxis trigger is intentionally fixed so it is always
+   reachable. Pages that render it get a quiet landing zone beneath their
+   content so the trigger never sits on top of the last row or primary action.
+   Pages that suppress the global trigger retain their existing mobile spacing. */
+@media (max-width: 760px) {
+  [data-staxis-main="true"] {
+    padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* The schedule timeline is intrinsically wider than a phone because its
+   hour axis needs readable intervals. Keep that width inside the card and let
+   the manager pan the board itself; the page and the surrounding hotel shell
+   remain locked to the viewport. */
+.staff-day-board-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+@media (max-width: 640px) {
+  .staff-day-board-scroll {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x pan-y;
+    scrollbar-width: thin;
+  }
+  .staff-day-board {
+    min-width: 560px;
+  }
+  .staff-day-board-row,
+  .staff-day-board-open-row {
+    height: 44px !important;
+  }
+  .staff-day-board-shift-block,
+  .staff-day-board-open-block {
+    top: 5px !important;
+    height: 34px !important;
+  }
+  .staff-day-board-resize-handle {
+    width: 18px !important;
+  }
+  .staff-day-board-remove {
+    width: 44px !important;
+    height: 44px !important;
+    top: 0 !important;
+  }
+}
+
+.staff-week-roster-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+@media (max-width: 640px) {
+  .staff-week-roster-scroll {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x pan-y;
+    scrollbar-width: thin;
+  }
+  .staff-week-roster {
+    min-width: 640px;
+  }
+  .staff-week-day-button {
+    min-height: 56px;
+  }
+}
+
 /* ── Safe area helpers ──────────────────────────────────────────────────────── */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
 
@@ -713,6 +784,139 @@ body {
   .sched-crew-pills {
     flex: none !important;
     width: 100% !important;
+  }
+}
+
+/* Housekeeping's assignment board is a dense desktop grid. On a phone each
+   crew row becomes three readable bands: person + status, workload, then a
+   contained room-chip lane. The lane may scroll sideways, but the document
+   itself never grows wider than the phone. */
+.hk-schedule-board-row {
+  grid-template-columns: 180px 80px 150px minmax(0, 1fr);
+}
+.hk-schedule-board-row > :nth-child(4) {
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .hk-schedule-board-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "crew readout"
+      "workload workload"
+      "chips chips";
+    gap: 8px 12px !important;
+    padding: 10px 12px !important;
+  }
+  .hk-schedule-board-row > :nth-child(1) { grid-area: crew; }
+  .hk-schedule-board-row > :nth-child(2) { grid-area: workload; }
+  .hk-schedule-board-row > :nth-child(3) {
+    grid-area: readout;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .hk-schedule-board-row > :nth-child(4) {
+    grid-area: chips;
+    width: 100%;
+    max-width: 100%;
+  }
+  .hk-schedule-board-row .hk-chiprow {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    touch-action: pan-x;
+    overscroll-behavior-x: contain;
+  }
+  .hk-schedule-board-chip {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 11px !important;
+  }
+}
+
+/* Quality is a two-column desktop report, not a two-column phone report.
+   Stack the report, keep the range rail inside the page, and give its small
+   filters/actions real tap targets without changing the desktop density. */
+.hk-quality-board {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+}
+.hk-quality-stat-band {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.hk-quality-range {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.hk-quality-range::-webkit-scrollbar { display: none; }
+.hk-quality-flagged-row > :nth-child(2) {
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .stx-snow-button {
+    min-width: 44px;
+    height: 44px !important;
+    min-height: 44px;
+  }
+}
+@media (max-width: 600px) {
+  .hk-quality-page {
+    padding: 16px 16px calc(130px + env(safe-area-inset-bottom, 0px)) !important;
+    min-height: 0 !important;
+  }
+  .hk-quality-board {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px !important;
+  }
+  .hk-quality-stat-band {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px !important;
+  }
+  .hk-quality-range {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .hk-quality-range-option,
+  .hk-quality-filter {
+    min-width: 44px;
+    min-height: 44px;
+    height: 44px !important;
+    padding: 0 12px !important;
+    touch-action: manipulation;
+  }
+  .hk-quality-flagged-row {
+    grid-template-columns: 52px minmax(0, 1fr) 50px !important;
+  }
+  .hk-quality-flagged-row > :last-child {
+    grid-column: 2 / -1;
+    justify-content: flex-end;
+    margin-top: 2px;
+  }
+}
+
+/* Staff scheduling keeps its calm desktop toolbar, but every phone action
+   needs a real hit area and the title must be allowed to wrap. The shared
+   button primitive supplies focus/disabled semantics; this rule only raises
+   its geometry inside the schedule surface. */
+@media (max-width: 640px) {
+  .staff-schedule-shell {
+    min-width: 0;
+  }
+  .staff-schedule-shell .stx-ui-button {
+    height: 44px !important;
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .staff-schedule-title {
+    max-width: 100%;
+    white-space: normal !important;
+    font-size: 22px !important;
+  }
+  .staff-schedule-view-toggle {
+    min-width: 48px;
+    min-height: 44px;
+    padding: 0 12px !important;
+    touch-action: manipulation;
   }
 }
 

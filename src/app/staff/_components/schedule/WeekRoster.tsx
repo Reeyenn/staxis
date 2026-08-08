@@ -74,9 +74,10 @@ export function WeekRoster({
   const capMinOf = (s: StaffMember) => weeklyCapMinutes(s.maxWeeklyHours);
 
   return (
-    <div ref={rootRef} style={{
-      border: `1px solid ${T.rule}`, borderRadius: 16, overflow: 'hidden', background: T.paper,
-    }}>
+    <div className="staff-week-roster-scroll">
+      <div ref={rootRef} className="staff-week-roster" style={{
+        border: `1px solid ${T.rule}`, borderRadius: 16, overflow: 'hidden', background: T.paper,
+      }}>
       {/* day header */}
       <div style={{ display: 'grid', gridTemplateColumns: cols, background: 'rgba(31,35,28,0.03)', borderBottom: `1px solid ${T.rule}` }}>
         <div style={{
@@ -88,6 +89,7 @@ export function WeekRoster({
           return (
             <button
               key={d.date}
+              className="staff-week-day-button"
               onClick={() => onPickDay?.(d.date)}
               title={onPickDay ? (`Open ${d.dowFull} in Day view`) : undefined}
               style={{
@@ -193,6 +195,7 @@ export function WeekRoster({
           </React.Fragment>
         );
       })}
+      </div>
     </div>
   );
 }
