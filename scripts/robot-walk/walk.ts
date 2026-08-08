@@ -47,6 +47,7 @@ import {
   ROBOT_WALK_ITEM_NAME,
   ROBOT_WALK_MARKER,
   ROBOT_WALK_TODO_TITLE,
+  isRobotWalkAuthRetryStatus,
   type RobotWalkStep,
   type RobotWalkStepResult,
 } from '../../src/lib/automation/robot-walk';
@@ -149,7 +150,11 @@ function isMatchingPost(
 ): boolean {
   if (responsePath(response) !== path || response.request().method() !== 'POST') return false;
   const body = requestBody(response);
-  return body !== null && matches(body);
+  if (body === null || !matches(body)) return false;
+  // fetchWithAuth may refresh after a 401 and issue the same POST again. Do
+  // not consume that intermediate response; a terminal 401 then times out
+  // instead of being mistaken for a successful or final failure envelope.
+  return !isRobotWalkAuthRetryStatus(response.status());
 }
 
 async function readSuccessfulEnvelope(

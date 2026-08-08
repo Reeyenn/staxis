@@ -66,6 +66,18 @@ export const ROBOT_WALK_COMPOSER_STRINGS: readonly string[] = [
 ];
 
 /**
+ * `fetchWithAuth` can expose an initial 401 before it refreshes the session
+ * and retries the same POST. The browser monitor must skip that intermediate
+ * response, while still observing every other status as the terminal result.
+ * A terminal 401 therefore times out rather than being mistaken for success.
+ */
+export const ROBOT_WALK_AUTH_RETRY_STATUS = 401;
+
+export function isRobotWalkAuthRetryStatus(status: number): boolean {
+  return status === ROBOT_WALK_AUTH_RETRY_STATUS;
+}
+
+/**
  * How stale the last run may get before the doctor says so. The walk is nightly
  * (24h), and 26 gives a two-hour grace for a slow runner or a queued job, so a
  * single late start is not an alert while a genuinely stopped robot is caught
