@@ -28,6 +28,14 @@ describe('personal Messages navigation in company scope', () => {
       appLayout,
       /const companySectionPending = activeScope\.kind === 'company'[\s\S]*?currentSection !== 'communications'/,
     );
+    assert.match(
+      appLayout,
+      /const companyScopedPersonalMessages = activeScope\.kind === 'company'[\s\S]*?currentSection === 'communications'/,
+    );
+    assert.match(
+      appLayout,
+      /const sectionOff = Boolean\(\s*!companyScopedPersonalMessages && currentSection &&/,
+    );
   });
 
   test('redirects the retired portfolio Communications route to personal Messages', () => {

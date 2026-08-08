@@ -68,8 +68,10 @@ export function AppLayout({
   const actingSectionEnabled = acting?.context?.source === 'portfolio' && currentSection
     ? acting.context.sectionAvailability[currentSection]
     : null;
+  const companyScopedPersonalMessages = activeScope.kind === 'company'
+    && currentSection === 'communications';
   const sectionOff = Boolean(
-    currentSection && (
+    !companyScopedPersonalMessages && currentSection && (
       actingSectionEnabled === false
       || (actingSectionEnabled === null
         && activeProperty
