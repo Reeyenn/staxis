@@ -88,9 +88,15 @@ describe('inventory manager workflow regressions', () => {
 
   test('Ask Staxis docks in the inventory header instead of covering count controls', () => {
     const ask = source('components', 'agent', 'AskStaxisBar.tsx');
-    assert.match(ask, /onInventory \? ' asx-mobile-fab-inventory' : ''/);
-    assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-inventory\{top:[^;]+;right:68px;bottom:auto;/);
+    const mobileNav = source('components', 'concourse', 'MobileConcourseNav.tsx');
+    const mobileNavCss = source('components', 'concourse', 'MobileConcourseNav.module.css');
+    assert.match(ask, /className=\{`asx-mobile-fab asx-mobile-fab-docked/);
+    assert.match(ask, /createPortal\([\s\S]*?mobileAskSlot/);
+    assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-docked\{position:static;top:auto;right:auto;bottom:auto;/);
+    assert.match(ask, /\.asx-mobile-fab\.asx-mobile-fab-docked\.asx-mobile-fab-open\{visibility:hidden;/);
     assert.match(ask, /width:44px;height:44px/);
+    assert.match(mobileNav, /data-staxis-mobile-ask-slot/);
+    assert.match(mobileNavCss, /grid-template-columns: 40px minmax\(0, 1fr\) 44px 40px/);
     assert.match(ask, /\.asx-mobile-sheet-inventory \.asx-mobile-composer\{padding-right:12px;\}/);
   });
 

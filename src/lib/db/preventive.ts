@@ -11,6 +11,7 @@ import { toPreventiveRow, fromPreventiveRow } from '../db-mappers';
 export function subscribeToPreventiveTasks(
   _uid: string, pid: string,
   callback: (tasks: PreventiveTask[]) => void,
+  onError?: (error: unknown) => void,
 ): () => void {
   return subscribeTable<PreventiveTask>(
     `preventive_tasks:${pid}`, 'preventive_tasks', `property_id=eq.${pid}`,
@@ -21,6 +22,9 @@ export function subscribeToPreventiveTasks(
       return (data ?? []).map(fromPreventiveRow);
     },
     callback,
+    undefined,
+    undefined,
+    onError,
   );
 }
 

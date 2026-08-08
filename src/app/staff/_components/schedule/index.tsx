@@ -607,7 +607,7 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         marginBottom: 18, gap: 16, minHeight: 44, flexWrap: 'wrap',
       }}>
-        <h1 style={{
+        <h1 className="staff-schedule-title" style={{
           fontFamily: fonts.sans, fontSize: 26, margin: 0, letterSpacing: '-0.02em',
           lineHeight: 1.1, fontWeight: 600, whiteSpace: 'nowrap', color: T.ink,
         }}>
@@ -668,7 +668,12 @@ export function ScheduleView({ staff, lang, data, timezone, propertyName, onOpen
             border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3,
           }}>
             {([['day', 'Day'], ['week', 'Week']] as const).map(([k, lab]) => (
-              <button key={k} onClick={() => switchView(k)} style={{
+              <button
+                key={k}
+                className="staff-schedule-view-toggle"
+                onClick={() => switchView(k)}
+                aria-pressed={view === k}
+                style={{
                 border: 'none', borderRadius: 999, padding: '6px 12px', cursor: 'pointer',
                 fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
                 background: view === k ? T.ink : 'transparent',

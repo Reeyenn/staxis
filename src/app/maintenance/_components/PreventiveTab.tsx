@@ -410,6 +410,7 @@ export function PreventiveTab() {
 
   const [tasks, setTasks] = useState<PreventiveTask[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
   const [registryOpen, setRegistryOpen] = useState(false);
@@ -420,14 +421,32 @@ export function PreventiveTab() {
   // Load gate: don't render the happy "No preventive tasks yet" empty state
   // until the first snapshot arrived; error card + retry when the load failed.
   const gate = useBoardGate(activePropertyId, 'preventive_tasks', loaded);
+  const boardReady = loaded && !loadError;
+  const boardUnavailable = loadError || gate.status === 'error';
 
   useEffect(() => {
-    if (!user || !activePropertyId) return;
+    if (!user || !activePropertyId) {
+      setLoaded(false);
+      setLoadError(false);
+      setTasks([]);
+      setSelId(null);
+      return;
+    }
     setLoaded(false);
-    const unsub = subscribeToPreventiveTasks(user.uid, activePropertyId, (rows) => {
-      setLoaded(true);
-      setTasks(rows);
-    });
+    setLoadError(false);
+    setTasks([]);
+    let initialSettled = false;
+    const unsub = subscribeToPreventiveTasks(
+      user.uid,
+      activePropertyId,
+      (rows) => {
+        initialSettled = true;
+        setLoaded(true);
+        setLoadError(false);
+        setTasks(rows);
+      },
+      () => { if (!initialSettled) setLoadError(true); },
+    );
     return () => unsub();
   }, [user, activePropertyId, gate.retryKey]);
 
@@ -529,8 +548,12 @@ export function PreventiveTab() {
     <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
       <PageHead
         eyebrow={'Preventive · scheduled'}
-        lead={overdueCount > 0 ? `${overdueCount} ${'overdue'}` : ('All on track')}
-        rest={`${tasks.length} ${tasks.length === 1 ? ('recurring task') : ('recurring tasks')}`}
+        lead={boardUnavailable ? 'Unavailable' : boardReady
+          ? (overdueCount > 0 ? `${overdueCount} ${'overdue'}` : ('All on track'))
+          : 'Loading…'}
+        rest={boardUnavailable ? 'Preventive unavailable' : boardReady
+          ? `${tasks.length} ${tasks.length === 1 ? ('recurring task') : ('recurring tasks')}`
+          : 'Loading…'}
         actions={<>
           <Btn variant="ghost" onClick={() => setRegistryOpen(true)}>
             {/* This opens the asset registry, distinct from the storeroom board. */}
@@ -540,8 +563,8 @@ export function PreventiveTab() {
         </>}
       />
 
-      {gate.status === 'error' ? (
-        <BoardLoadError es={es} onRetry={gate.retry} />
+      {loadError || gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={() => { setLoadError(false); gate.retry(); }} />
       ) : gate.status === 'loading' ? (
         <BoardLoading es={es} />
       ) : tasks.length === 0 ? (

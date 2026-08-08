@@ -79,7 +79,9 @@ jobs:
   # future file; no hand-maintained allowlist can silently omit a new test.
   root-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The complete npm test contract (server, integration, and serialized client suites)
+    # now needs more than the previous ceiling on a clean runner.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
