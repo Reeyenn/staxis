@@ -22,6 +22,7 @@
 // a liability.
 
 import type { AnyActionDefinition, ActionDefinition, ActionParams, FindingActionKind } from './types';
+import { validateActionContract } from '@/lib/staxis/foundation';
 
 export class ActionDeclarationError extends Error {
   constructor(message: string) {
@@ -75,6 +76,12 @@ export function validateActionDefinition(
     throw new ActionDeclarationError(
       `Action "${kind}" needs outcomeCheckDays >= 1 — a fix nobody ever goes back to check is an ` +
       'intention, not an outcome.',
+    );
+  }
+  const contractErrors = validateActionContract(definition.actionContract);
+  if (contractErrors.length > 0) {
+    throw new ActionDeclarationError(
+      `Action "${kind}" has an inadmissible action contract: ${contractErrors.join('; ')}`,
     );
   }
 }

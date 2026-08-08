@@ -556,6 +556,32 @@ describe('the hands, proven against a real database', { concurrency: 1 }, () => 
       assert.equal(rows.rows[0].n, 1);
     });
 
+    test('an open offer coalesces changed verification and keeps its first frozen evidence', async () => {
+      const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
+      const again = await proposeAction(PID_A, findingId, {
+        kind: 'create_work_order',
+        params: createWorkOrderParams('Room 214'),
+        // The open card remains anchored to the facts its manager saw. A
+        // changed verify value is a new durable idempotency key only after the
+        // first offer reaches a terminal state (0369); it must not rewrite an
+        // offer that is still waiting for the manager.
+        verify: { location: 'Room 214', window_days: 30, open_work_orders: 9 },
+      });
+      assert.equal(again, 'unchanged');
+
+      const row = await actionRow(actionId);
+      assert.deepEqual(row?.verify, {
+        location: 'Room 214',
+        window_days: 30,
+        open_work_orders: 2,
+      });
+      const rows = await pg.query<{ n: number }>(
+        `select count(*)::int n from public.finding_actions where finding_id=$1`,
+        [findingId],
+      );
+      assert.equal(rows.rows[0].n, 1);
+    });
+
     test('a re-run with a DIFFERENT plan supersedes the old offer rather than duplicating it', async () => {
       const { findingId, actionId } = await offerReorder(PID_A, ITEM_A, 20);
       const bigger = raiseReorderPointParams({

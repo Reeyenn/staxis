@@ -35,6 +35,7 @@ import { scopedDb } from '@/lib/agent/scoped-db';
 import { log } from '@/lib/log';
 
 import { getAction } from './registry';
+import { actionContractIsAdmissible } from '@/lib/staxis/foundation';
 import type {
   ActionParams,
   ActionReceipt,
@@ -172,6 +173,13 @@ export async function proposeAction(
   const definition = getAction(draft.kind);
   if (!definition) {
     log.error('[findings:actions] a detector proposed an action kind the catalog does not have', {
+      propertyId,
+      kind: draft.kind,
+    });
+    return 'rejected';
+  }
+  if (!actionContractIsAdmissible(definition.actionContract)) {
+    log.error('[findings:actions] action is not lifecycle-admitted; proposal refused', {
       propertyId,
       kind: draft.kind,
     });

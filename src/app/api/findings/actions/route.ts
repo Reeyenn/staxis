@@ -49,6 +49,8 @@ import { loadFinding, recordFindingActed } from '@/lib/findings/store';
 import type { FindingAction } from '@/lib/findings/actions/types';
 import { resolveCompanyForProperty } from '@/lib/company/access';
 import { resolveSignOffStrict } from '@/lib/company/signoff';
+import { actionContractIsAdmissible } from '@/lib/staxis/foundation';
+import { getAction } from '@/lib/findings/actions/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -221,6 +223,24 @@ export async function POST(req: NextRequest) {
     const action = await loadAction(propertyId, actionId);
     if (!action) {
       return err('No such action', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+
+    if (intent === 'execute') {
+      const definition = getAction(action.kind);
+      if (!definition || !actionContractIsAdmissible(definition.actionContract)) {
+        log.error('[findings:actions:POST] action is not lifecycle-admitted; refusing execution', {
+          requestId,
+          propertyId,
+          actionId,
+          kind: action.kind,
+        });
+        return err('This action cannot be executed because its safety contract is incomplete', {
+          requestId,
+          status: 503,
+          code: ApiErrorCode.InternalError,
+          headers: { 'Retry-After': '15' },
+        });
+      }
     }
 
     // ── the company's signature, enforced ────────────────────────────────────

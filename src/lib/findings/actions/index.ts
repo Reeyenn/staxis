@@ -51,3 +51,5 @@ export {
   type ActionTemplate,
   type PostConditionResult,
 } from './types';
+
+export type { ActionAdmissionContract } from '@/lib/staxis/foundation';

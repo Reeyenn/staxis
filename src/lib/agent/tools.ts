@@ -29,6 +29,10 @@ import {
 } from '@/lib/sections/registry';
 import { getEnabledSectionsFresh } from '@/lib/sections/server';
 import type { CompanionPageKey } from '@/lib/companion/pages';
+import {
+  validateActionContract,
+  type ActionAdmissionContract,
+} from '@/lib/staxis/foundation';
 
 // Retained because the protected prompt composer still imports this legacy
 // type for its inert VoiceModeContext compatibility shape. No tool registry
@@ -263,6 +267,14 @@ export interface ToolDefinition<TArgs = unknown> {
    */
   mutates?: boolean;
   /**
+   * Machine-readable effect boundary for lifecycle-admitted mutations.  The
+   * registry deliberately does not derive guarantees from a description,
+   * role, approval tier, or input schema: older tools may remain callable but
+   * are excluded from lifecycle admission until they provide truthful,
+   * explicit metadata.
+   */
+  actionContract?: ActionAdmissionContract;
+  /**
    * Approval tier for the AI-assistant approval flow. REQUIRED on every
    * `mutates: true` tool (enforced by a completeness unit test) and MUST be
    * absent on read-only tools.
@@ -379,6 +391,19 @@ export interface ToolDefinition<TArgs = unknown> {
 const registry = new Map<string, ToolDefinition<unknown>>();
 
 export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
+  if (tool.mutates === true) {
+    // Existing tools remain callable while they are migrated. They are not
+    // lifecycle-admitted until they carry a truthful, explicit contract; no
+    // generic metadata is invented from a description or approval tier.  A
+    // malformed optional declaration is retained for backwards-compatible
+    // tool execution, but action admission will fail closed at the lifecycle
+    // seam (and the catalogue diagnostics expose the exact reasons).
+    registry.set(tool.name, tool as ToolDefinition<unknown>);
+    return;
+  }
+  if (tool.actionContract) {
+    throw new Error(`Read-only tool "${tool.name}" cannot declare a mutating action contract.`);
+  }
   registry.set(tool.name, tool as ToolDefinition<unknown>);
 }
 
@@ -512,6 +537,19 @@ export function isMutationTool(name: string): boolean {
 /** The approval tier a mutation tool carries ('quick' | 'card'), or null. */
 export function approvalTierFor(name: string): 'quick' | 'card' | null {
   return registry.get(resolveToolName(name))?.approval ?? null;
+}
+
+/** Read the admission contract used by the approval/custody layer. */
+export function actionContractFor(name: string): ActionAdmissionContract | null {
+  return registry.get(resolveToolName(name))?.actionContract ?? null;
+}
+
+/** Why a mutation is not eligible for the shared lifecycle projection. */
+export function actionContractErrorsFor(name: string): readonly string[] {
+  const tool = registry.get(resolveToolName(name));
+  if (!tool || tool.mutates !== true) return [];
+  if (!tool.actionContract) return ['action contract is missing'];
+  return validateActionContract(tool.actionContract);
 }
 
 /**
